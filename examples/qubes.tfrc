@@ -1,0 +1,10 @@
+# CLI config for the dev_overrides workflow.
+#   Terraform:  export TF_CLI_CONFIG_FILE=$PWD/qubes.tfrc
+#   OpenTofu:   export TF_CLI_CONFIG_FILE=$PWD/qubes.tfrc   (or use .tofurc)
+# Adjust the path to wherever the terraform-provider-qubes entrypoint lives.
+provider_installation {
+  dev_overrides {
+    "deeplow/qubes" = "/home/user/qubes-terraform/.venv/bin"
+  }
+  direct {}
+}
