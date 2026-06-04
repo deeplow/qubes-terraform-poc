@@ -1,97 +1,113 @@
 """In-memory fakes mimicking the slice of qubesadmin the provider uses.
 
-Lets the provider be unit-tested against the real provider logic. ``qubesadmin``
-is importable here (system site-packages) so we reuse its real ``DEFAULT`` sentinel.
+Models the Admin API semantics the provider relies on: property_is_default(),
+the qubesadmin.DEFAULT sentinel (Reset), VM-valued props returning objects with
+.name, is_halted(), and domains.refresh_cache(). qubesadmin is importable here
+(system site-packages) so we reuse its real DEFAULT sentinel.
 """
 
 import qubesadmin
 
-# Default values qubesd would resolve; mirrored by FakeApp.default_* and GetDefault.
-DEFAULT_TEMPLATE = "default-template"
-DEFAULT_NETVM = "default-netvm"
-
 
 class FakeLabel:
     def __init__(self, name):
-        self._name = name
+        self.name = name
 
     def __str__(self):
-        return self._name
+        return self.name
+
+
+class _Ref:
+    """A VM-valued property result (has .name and str(), like a QubesVM)."""
+
+    def __init__(self, name):
+        self.name = name
+
+    def __str__(self):
+        return self.name
 
 
 class FakeVM:
-    # Only these classes have a `template` property; others raise AttributeError.
     HAS_TEMPLATE = {"AppVM", "DispVM"}
+    MANAGED = ("template", "netvm", "memory", "maxmem", "template_for_dispvms", "label")
+    REF = ("template", "netvm")
+    # Values qubesd would resolve for a default-following property.
+    DEFAULTS = {
+        "template": "default-template", "netvm": "default-netvm",
+        "memory": 400, "maxmem": 4000, "template_for_dispvms": False,
+    }
 
     def __init__(self, name, klass, label, template=None):
-        self.name = name
-        self.klass = klass
-        self._label = label
-        self.memory = 400
-        self.maxmem = 4000
-        self.template_for_dispvms = False
-        self._running = False
-        self._defaults = set()  # ref-props genuinely in the default-following state
-        self._props = {}        # resolved value for ref-props (name or None)
-        # A freshly created VM's netvm genuinely follows the default netvm.
-        self._defaults.add("netvm")
-        self._props["netvm"] = DEFAULT_NETVM
+        object.__setattr__(self, "_props", {})
+        object.__setattr__(self, "_defaults", set())
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "klass", klass)
+        object.__setattr__(self, "_running", False)
+        object.__setattr__(self, "shutdown_timeout", 60)
+        object.__setattr__(self, "writes", [])  # managed-property writes, for idempotency tests
+        self._props["label"] = label  # label is explicit, never default-following
+        # netvm/memory/maxmem/template_for_dispvms start default-following.
+        for p in ("netvm", "memory", "maxmem", "template_for_dispvms"):
+            self._defaults.add(p)
+            self._props[p] = self.DEFAULTS[p]
         if klass in self.HAS_TEMPLATE:
-            # qubesd PINS the template to the default *value* at create (no template
-            # given) -> NOT default-following, but value equals the default.
-            self._props["template"] = DEFAULT_TEMPLATE if template is None else str(template)
+            # qubesd pins the template to a concrete value at create (not default).
+            self._props["template"] = self.DEFAULTS["template"] if template is None else str(template)
 
-    _DEFAULTS = {"template": DEFAULT_TEMPLATE, "netvm": DEFAULT_NETVM}
+    def __getattr__(self, key):
+        props = object.__getattribute__(self, "_props")
+        if key == "template" and self.klass not in self.HAS_TEMPLATE:
+            raise AttributeError("template")
+        if key in props:
+            val = props[key]
+            if key in self.REF:
+                return _Ref(val) if val else None
+            if key == "label":
+                return FakeLabel(val)
+            return val
+        raise AttributeError(key)
 
-    # mirrors qubesadmin: True only if the property is in the default-following state.
+    def __setattr__(self, key, value):
+        if key in self.MANAGED:
+            if key == "template" and self.klass not in self.HAS_TEMPLATE:
+                raise AttributeError("template")
+            self.writes.append(key)
+            if value is qubesadmin.DEFAULT:           # admin.vm.property.Reset
+                self._defaults.add(key)
+                self._props[key] = self.DEFAULTS.get(key)
+            else:
+                self._defaults.discard(key)
+                if key in self.REF:
+                    self._props[key] = None if value in (None, "") else (
+                        value.name if hasattr(value, "name") else str(value)
+                    )
+                else:
+                    self._props[key] = value
+        else:
+            object.__setattr__(self, key, value)
+
     def property_is_default(self, name):
         if name == "template" and self.klass not in self.HAS_TEMPLATE:
             raise AttributeError("template")
         return name in self._defaults
 
-    # mirrors admin.vm.property.GetDefault: the resolved default value.
-    def property_get_default(self, name):
+    def property_get_default(self, name):  # mirrors admin.vm.property.GetDefault
         if name == "template" and self.klass not in self.HAS_TEMPLATE:
             raise AttributeError("template")
-        return self._DEFAULTS[name]
+        val = self.DEFAULTS[name]
+        return _Ref(val) if name in self.REF else val
 
-    def _set_ref(self, key, value):
-        if value is qubesadmin.DEFAULT:   # -> admin.vm.property.Reset
-            self._defaults.add(key)
-            self._props[key] = self._DEFAULTS[key]
-        else:
-            self._defaults.discard(key)
-            self._props[key] = None if value in (None, "") else str(value)
-
-    # label is a Label object in qubesadmin; str() yields its name.
-    @property
-    def label(self):
-        return FakeLabel(self._label)
-
-    @label.setter
-    def label(self, value):
-        self._label = str(value)
-
-    @property
-    def template(self):
-        if self.klass not in self.HAS_TEMPLATE:
-            raise AttributeError("template")
-        return self._props["template"]
-
-    @template.setter
-    def template(self, value):
-        self._set_ref("template", value)
-
-    @property
-    def netvm(self):
-        return self._props["netvm"] or None
-
-    @netvm.setter
-    def netvm(self, value):
-        self._set_ref("netvm", value)
+    def is_halted(self):
+        return not self._running
 
     def is_running(self):
         return self._running
+
+    def kill(self):
+        object.__setattr__(self, "_running", False)
+
+    def shutdown(self, force=False):
+        object.__setattr__(self, "_running", False)
 
     def get_power_state(self):
         return "Running" if self._running else "Halted"
@@ -116,6 +132,9 @@ class FakeDomains:
     def __iter__(self):
         return iter(self._d.values())
 
+    def refresh_cache(self, force=False):
+        pass
+
     def add(self, vm):
         self._d[vm.name] = vm
 
@@ -123,12 +142,8 @@ class FakeDomains:
 class FakeApp:
     """Stands in for ``qubesadmin.Qubes()``."""
 
-    default_template = DEFAULT_TEMPLATE
-    default_netvm = DEFAULT_NETVM
-
     def __init__(self):
         self.domains = FakeDomains()
-        # Seed a template and a netvm to reference.
         self.domains.add(FakeVM("fedora-40", "TemplateVM", "black"))
         self.domains.add(FakeVM("sys-firewall", "AppVM", "green"))
 

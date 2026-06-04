@@ -17,7 +17,7 @@ resource "qubes_vm" "alpha" {
   vm_class = "AppVM"
   label    = "red"
   netvm    = ""
-  template = "@default"
+  template = "*default*"
   template_for_dispvms = true
 }
 

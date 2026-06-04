@@ -54,22 +54,22 @@ CRUD maps onto the Admin API:
 | `name` | string, required | Unique VM name. Changing it replaces the resource. |
 | `vm_class` | string, required | `AppVM`, `TemplateVM`, `StandaloneVM`, `DispVM`. Replaces on change. |
 | `label` | string, required | Label color (red, blue, …). Updatable. |
-| `template` | string, optional/computed | Base template. `"@default"` = Qubes default template; a name = that template. Updatable. |
+| `template` | string, optional/computed | Base template. `"*default*"` = Qubes default template; a name = that template. Updatable. |
 | `memory` | number, optional/computed | Initial memory (MB). |
 | `maxmem` | number, optional/computed | Max memory for ballooning (MB). |
-| `netvm` | string, optional/computed | `"@default"` = Qubes default netvm; `""` = no network; a name = that netvm. |
+| `netvm` | string, optional/computed | `"*default*"` = Qubes default netvm; `""` = no network; a name = that netvm. |
 | `template_for_dispvms` | bool, optional/computed | Whether this VM may serve as a template for DispVMs. |
 | `provisioned` | bool, computed | True once created by this provider. |
 
 A `qubes_vm` **data source** exposes the same fields plus `power_state`.
 
-`"@default"` lets Qubes choose the value (it round-trips, so it produces no spurious
-diffs). qubesd has no literal `@default`: on create the provider leaves the property at its
-default, and on read it reports `"@default"` when the live value equals the property's
-default (via `admin.vm.property.GetDefault`) — this is necessary because qubesd *pins* an
-AppVM's template to the default value, so `property_is_default` alone is unreliable.
-*Updating* a property **to** `@default` uses `admin.vm.property.Reset`, so that verb is
-needed in the qrexec policy (creating with `@default` does not need it).
+`"*default*"` (the qubes-ansible sentinel) lets Qubes choose the value; it round-trips, so it
+produces no spurious diffs. qubesd has no literal `*default*`, and it refuses to *unset* some
+properties — e.g. an AppVM's `template` ("Cannot unset template; set it to the current default
+instead"). So the provider implements `*default*` as **"set the property to its current
+default value"** (resolved via `admin.vm.property.GetDefault`), which is a no-op when the
+value already equals the default. On read it reports `"*default*"` when the live value equals
+the current default. This needs only `property.Get`/`GetDefault` — no `property.Reset`.
 
 ## Requirements
 

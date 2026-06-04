@@ -15,12 +15,12 @@ resource "qubes_vm" "work_demo" {
   template = "fedora-43-xfce"
   label    = "blue"
   memory   = 2048
-  netvm    = "@default"
+  netvm    = "*default*"
 }
 
 # Read an existing qube.
 #data "qubes_vm" "firewall" {
-#  name = "@default"
+#  name = "*default*"
 #}
 
 output "work_template" {

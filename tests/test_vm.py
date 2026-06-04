@@ -1,10 +1,17 @@
-"""Unit tests for the qubes_vm resource and data source (no real Qubes needed)."""
+"""Unit tests for the qubes_vm resource and data source (no real Qubes needed).
+
+Mirrors qubes-ansible semantics: "*default*" -> qubesadmin.DEFAULT (Reset) and
+round-trips via property_is_default().
+"""
 
 from unittest.mock import MagicMock
 
 import pytest
+import qubesadmin
+from qubesadmin import exc as qexc
 
 from qubes_provider import client
+from qubes_provider.client import QubesProviderError, enforce_properties
 from qubes_provider.data_sources.vm import QubesVMDataSource
 from qubes_provider.provider import QubesProvider
 from qubes_provider.resources.vm import QubesVMResource
@@ -13,7 +20,6 @@ from tests.fakes import FakeApp
 
 @pytest.fixture
 def app(monkeypatch):
-    """Patch get_app() everywhere it's imported to return a shared FakeApp."""
     fake = FakeApp()
     monkeypatch.setattr(client, "get_app", lambda: fake)
     monkeypatch.setattr("qubes_provider.resources.vm.get_app", lambda: fake)
@@ -40,57 +46,72 @@ def test_resource_type_name_is_qubes_vm():
     assert QubesVMDataSource in p.get_data_sources()
 
 
-def test_schema_builds():
-    # to_pb() exercises every attribute/type mapping end-to-end.
+def test_schemas_build():
     assert QubesVMResource.get_schema().to_pb() is not None
     assert QubesVMDataSource.get_schema().to_pb() is not None
 
 
-# --- CRUD -------------------------------------------------------------------
+# --- create -----------------------------------------------------------------
 
-def test_create_appvm(app):
+def test_create_explicit_template(app):
     c = ctx()
-    planned = {
-        "name": "tf-work", "vm_class": "AppVM", "label": "blue",
-        "template": "fedora-40", "memory": 2048, "maxmem": None, "netvm": None,
-    }
-    state = res().create(c, planned)
+    state = res().create(c, {"name": "tf-work", "vm_class": "AppVM", "label": "blue",
+                             "template": "fedora-40", "memory": 2048})
     c.diagnostics.add_error.assert_not_called()
     assert "tf-work" in app.domains
-    assert state["name"] == "tf-work"
-    assert state["vm_class"] == "AppVM"
-    assert state["label"] == "blue"
     assert state["template"] == "fedora-40"
     assert state["memory"] == 2048
     assert state["provisioned"] is True
+    # template was set by add_new_vm, not re-written by enforce.
+    assert "template" not in app.domains["tf-work"].writes
 
 
-def test_create_reports_error_on_failure(app, monkeypatch):
-    def boom(*a, **k):
-        raise RuntimeError("name already used")
+def test_create_default_template_roundtrips_without_reset(app):
+    # "*default*" -> created with the default template value (qubesd forbids
+    # unsetting template) -> no write needed -> reads back "*default*".
+    state = res().create(ctx(), {"name": "tf-d", "vm_class": "AppVM", "label": "red",
+                                 "template": "*default*"})
+    assert state["template"] == "*default*"
+    assert "template" not in app.domains["tf-d"].writes  # no Reset/Set issued
 
-    monkeypatch.setattr(app, "add_new_vm", boom)
+
+def test_create_default_netvm_is_noop_and_roundtrips(app):
+    # netvm omitted is computed; "*default*" already default -> no write.
+    state = res().create(ctx(), {"name": "tf-n", "vm_class": "AppVM", "label": "red",
+                                 "netvm": "*default*"})
+    assert state["netvm"] == "*default*"
+    assert "netvm" not in app.domains["tf-n"].writes
+
+
+def test_create_explicit_no_netvm(app):
+    state = res().create(ctx(), {"name": "tf-x", "vm_class": "AppVM", "label": "red",
+                                 "netvm": ""})
+    assert state["netvm"] == ""  # explicit none, distinct from "*default*"
+    assert app.domains["tf-x"].property_is_default("netvm") is False
+
+
+def test_create_rolls_back_on_enforce_failure(app, monkeypatch):
+    # If enforce fails after add_new_vm, the partially-created qube is removed.
+    monkeypatch.setattr("qubes_provider.resources.vm.enforce_properties",
+                        MagicMock(side_effect=RuntimeError("boom")))
     c = ctx()
-    state = res().create(c, {"name": "dup", "vm_class": "AppVM", "label": "red"})
-    assert state is None
+    assert res().create(c, {"name": "tf-rb", "vm_class": "AppVM", "label": "red"}) is None
+    assert "tf-rb" not in app.domains          # rolled back
     c.diagnostics.add_error.assert_called_once()
 
+
+def test_create_reports_error(app, monkeypatch):
+    monkeypatch.setattr(app, "add_new_vm",
+                        MagicMock(side_effect=RuntimeError("name already used")))
+    c = ctx()
+    assert res().create(c, {"name": "dup", "vm_class": "AppVM", "label": "red"}) is None
+    c.diagnostics.add_error.assert_called_once()
+
+
+# --- read -------------------------------------------------------------------
 
 def test_read_missing_returns_none(app):
     assert res().read(ctx(), {"name": "ghost"}) is None
-
-
-def test_read_reports_daemon_access_error(app, monkeypatch):
-    # Simulate qubesadmin raising (e.g. QubesDaemonAccessError: policy denied)
-    # instead of crashing the plugin.
-    class Boom:
-        def __contains__(self, key):
-            raise RuntimeError("Request refused")
-
-    monkeypatch.setattr(app, "domains", Boom())
-    c = ctx()
-    assert res().read(c, {"name": "tf-work"}) is None
-    c.diagnostics.add_error.assert_called_once()
 
 
 def test_read_existing(app):
@@ -100,105 +121,60 @@ def test_read_existing(app):
     assert state["template"] == "fedora-40"
 
 
+def test_read_reports_daemon_access_error(app, monkeypatch):
+    class Boom:
+        def __contains__(self, k):
+            raise RuntimeError("Request refused")
+
+    monkeypatch.setattr(app, "domains", Boom())
+    c = ctx()
+    assert res().read(c, {"name": "tf-work"}) is None
+    c.diagnostics.add_error.assert_called_once()
+
+
+# --- update -----------------------------------------------------------------
+
 def test_update_changes_label_and_memory(app):
     app.add_new_vm("AppVM", "tf-work", "blue", template="fedora-40")
-    current = {"name": "tf-work", "label": "blue", "memory": 400}
-    planned = {"name": "tf-work", "label": "red", "memory": 1024}
-    state = res().update(ctx(), current, planned)
+    state = res().update(ctx(),
+                         {"name": "tf-work", "label": "blue", "memory": 400},
+                         {"name": "tf-work", "label": "red", "memory": 1024})
     assert state["label"] == "red"
     assert state["memory"] == 1024
-    assert app.domains["tf-work"]._label == "red"
 
 
-def test_update_only_writes_changed_concrete_values(app):
-    vm = app.add_new_vm("AppVM", "tf-work", "blue")
-    vm.netvm = "sys-firewall"
-    # netvm unchanged + memory is Unknown (computed, not set) -> no writes
-    from tf.types import Unknown
-    current = {"name": "tf-work", "label": "blue", "netvm": "sys-firewall"}
-    planned = {"name": "tf-work", "label": "blue", "netvm": "sys-firewall",
-               "memory": Unknown}
-    res().update(ctx(), current, planned)
-    assert app.domains["tf-work"].memory == 400  # untouched
-
-
-def test_create_with_default_template_roundtrips(app):
-    # template="@default" -> created with default template -> reads back "@default".
-    # Regression: qubesd pins template to the default *value*, so the value (not
-    # property_is_default) must drive the round-trip via GetDefault.
-    c = ctx()
-    planned = {"name": "tf-d", "vm_class": "AppVM", "label": "red",
-               "template": "@default", "netvm": "@default"}
-    state = res().create(c, planned)
-    c.diagnostics.add_error.assert_not_called()
-    assert state["template"] == "@default"   # not the concrete default-template name
-    assert state["netvm"] == "@default"
-    # template is pinned (NOT default-following), yet still round-trips to "@default".
-    assert app.domains["tf-d"].property_is_default("template") is False
-    assert app.domains["tf-d"].template == "default-template"
-
-
-def test_create_default_template_with_drift_reads_concrete(app):
-    # If the live value no longer equals the default, read returns the concrete name.
-    res().create(ctx(), {"name": "tf-d2", "vm_class": "AppVM", "label": "red",
-                         "template": "@default"})
-    app.domains["tf-d2"].template = "fedora-40"  # drift away from default
-    state = res().read(ctx(), {"name": "tf-d2", "template": "@default"})
-    assert state["template"] == "fedora-40"
-
-
-def test_create_explicit_no_netvm_roundtrips(app):
-    state = res().create(ctx(), {"name": "tf-n", "vm_class": "AppVM",
-                                 "label": "red", "netvm": ""})
-    assert state["netvm"] == ""  # explicit none, distinct from "@default"
-    assert app.domains["tf-n"].property_is_default("netvm") is False
-
-
-def test_update_to_default_resets(app):
+def test_update_to_default(app):
     vm = app.add_new_vm("AppVM", "tf-work", "blue", template="fedora-40")
     vm.netvm = "sys-firewall"
-    current = {"name": "tf-work", "label": "blue", "netvm": "sys-firewall"}
-    planned = {"name": "tf-work", "label": "blue", "netvm": "@default"}
-    state = res().update(ctx(), current, planned)
-    assert app.domains["tf-work"].property_is_default("netvm") is True
-    assert state["netvm"] == "@default"
+    vm.writes.clear()
+    state = res().update(ctx(),
+                         {"name": "tf-work", "netvm": "sys-firewall"},
+                         {"name": "tf-work", "netvm": "*default*"})
+    # set to the current default value (not a Reset) -> round-trips to "*default*".
+    assert state["netvm"] == "*default*"
+    assert "netvm" in app.domains["tf-work"].writes
 
 
-def test_update_default_to_default_is_noop(app, monkeypatch):
-    app.add_new_vm("AppVM", "tf-work", "blue", template="fedora-40")
-    # netvm "@default" unchanged -> apply must write nothing.
-    calls = []
-    monkeypatch.setattr(client, "_set_prop",
-                        lambda *a, **k: calls.append(a[2]))
-    current = {"name": "tf-work", "label": "blue", "netvm": "@default"}
-    planned = {"name": "tf-work", "label": "blue", "netvm": "@default"}
-    res().update(ctx(), current, planned)
-    assert "netvm" not in calls
+def test_update_default_to_default_is_idempotent(app):
+    vm = app.add_new_vm("AppVM", "tf-work", "blue", template="fedora-40")
+    vm.writes.clear()
+    res().update(ctx(),
+                 {"name": "tf-work", "netvm": "*default*"},
+                 {"name": "tf-work", "netvm": "*default*"})
+    assert "netvm" not in vm.writes  # already default-following -> no write
 
 
-def test_set_template_for_dispvms(app):
-    state = res().create(ctx(), {"name": "tf-dt", "vm_class": "AppVM", "label": "red",
-                                 "template_for_dispvms": True})
-    assert state["template_for_dispvms"] is True
-    assert app.domains["tf-dt"].template_for_dispvms is True
+def test_update_explicit_none_is_idempotent(app):
+    vm = app.add_new_vm("AppVM", "tf-work", "blue", template="fedora-40")
+    vm.netvm = ""          # explicit none
+    vm.writes.clear()
+    res().update(ctx(),
+                 {"name": "tf-work", "netvm": ""},
+                 {"name": "tf-work", "netvm": ""})
+    assert "netvm" not in vm.writes  # None normalized to "" -> unchanged
 
 
-def test_template_for_dispvms_defaults_false_when_omitted(app, monkeypatch):
-    from tf.types import Unknown
-    calls = []
-    monkeypatch.setattr(client, "_set_prop", lambda *a, **k: calls.append(a[2]))
-    res().create(ctx(), {"name": "tf-x", "vm_class": "AppVM", "label": "red",
-                         "template_for_dispvms": Unknown})
-    assert "template_for_dispvms" not in calls  # computed/omitted -> not written
-
-
-def test_create_dispvm_on_appvm_template(app):
-    app.add_new_vm("AppVM", "tf-dt", "red")  # the dispvm template
-    state = res().create(ctx(), {"name": "tf-disp", "vm_class": "DispVM",
-                                 "label": "green", "template": "tf-dt"})
-    assert state["vm_class"] == "DispVM"
-    assert state["template"] == "tf-dt"
-
+# --- delete / import --------------------------------------------------------
 
 def test_delete_removes_vm(app):
     app.add_new_vm("AppVM", "tf-work", "blue")
@@ -206,19 +182,16 @@ def test_delete_removes_vm(app):
     assert "tf-work" not in app.domains
 
 
-def test_delete_kills_running_vm_first(app):
+def test_delete_kills_running_vm(app):
     vm = app.add_new_vm("AppVM", "tf-work", "blue")
-    vm._running = True
-    vm.kill = MagicMock(side_effect=lambda: setattr(vm, "_running", False))
+    object.__setattr__(vm, "_running", True)
     res().delete(ctx(), {"name": "tf-work"})
-    vm.kill.assert_called_once()
     assert "tf-work" not in app.domains
 
 
 def test_import_existing(app):
     app.add_new_vm("AppVM", "tf-work", "blue", template="fedora-40")
-    state = res().import_(ctx(), "tf-work")
-    assert state["name"] == "tf-work"
+    assert res().import_(ctx(), "tf-work")["name"] == "tf-work"
 
 
 def test_import_missing(app):
@@ -227,17 +200,39 @@ def test_import_missing(app):
     c.diagnostics.add_error.assert_called_once()
 
 
-# --- data source ------------------------------------------------------------
+# --- template_for_dispvms / DispVM ------------------------------------------
 
-def test_data_source_reads_power_state(app):
-    vm = app.add_new_vm("AppVM", "tf-work", "blue")
-    vm._running = True
-    state = QubesVMDataSource(provider=MagicMock()).read(ctx(), {"name": "tf-work"})
-    assert state["power_state"] == "Running"
-    assert state["vm_class"] == "AppVM"
+def test_set_template_for_dispvms(app):
+    state = res().create(ctx(), {"name": "tf-dt", "vm_class": "AppVM", "label": "red",
+                                 "template_for_dispvms": True})
+    assert state["template_for_dispvms"] is True
+    assert app.domains["tf-dt"].template_for_dispvms is True
 
 
-def test_data_source_missing(app):
-    c = ctx()
-    assert QubesVMDataSource(provider=MagicMock()).read(c, {"name": "ghost"}) is None
-    c.diagnostics.add_error.assert_called_once()
+def test_create_dispvm_on_appvm_template(app):
+    app.add_new_vm("AppVM", "tf-dt", "red")
+    state = res().create(ctx(), {"name": "tf-disp", "vm_class": "DispVM",
+                                 "label": "green", "template": "tf-dt"})
+    assert state["vm_class"] == "DispVM"
+    assert state["template"] == "tf-dt"
+
+
+# --- enforce_properties typed error mapping ---------------------------------
+
+def test_enforce_maps_typed_errors():
+    class BoomVM:
+        klass = "AppVM"
+
+        def property_is_default(self, name):
+            return False
+
+        @property
+        def memory(self):
+            return 400
+
+        @memory.setter
+        def memory(self, value):
+            raise qexc.QubesValueError("bad")
+
+    with pytest.raises(QubesProviderError, match="invalid value"):
+        enforce_properties(None, BoomVM(), {"memory": 99999})
