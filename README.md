@@ -7,10 +7,15 @@ to the Qubes **Python Admin API** (`qubesadmin`). Manage qubes declaratively:
 resource "qubes_vm" "work" {
   name     = "tf-work"
   vm_class = "AppVM"
-  template = "fedora-40"
   label    = "blue"
-  memory   = 2048
-  netvm    = "sys-firewall"
+  template = "*default*"
+
+  properties = {
+    memory = "2048"
+    netvm  = "sys-firewall"
+  }
+  features = { "service.qubes-firewall" = "1" }
+  tags     = ["team-x"]
 }
 ```
 
@@ -49,27 +54,44 @@ CRUD maps onto the Admin API:
 
 ## The `qubes_vm` resource
 
+Only the four `qvm-create` args are typed; everything else is a **generic bag** passed
+straight through `qubesadmin` and validated by **qubesd** — so the provider doesn't hardcode
+(or need to track) individual properties.
+
 | Attribute | Type | Notes |
 |---|---|---|
 | `name` | string, required | Unique VM name. Changing it replaces the resource. |
 | `vm_class` | string, required | `AppVM`, `TemplateVM`, `StandaloneVM`, `DispVM`. Replaces on change. |
-| `label` | string, required | Label color (red, blue, …). Updatable. |
-| `template` | string, optional/computed | Base template. `"*default*"` = Qubes default template; a name = that template. Updatable. |
-| `memory` | number, optional/computed | Initial memory (MB). |
-| `maxmem` | number, optional/computed | Max memory for ballooning (MB). |
-| `netvm` | string, optional/computed | `"*default*"` = Qubes default netvm; `""` = no network; a name = that netvm. |
-| `template_for_dispvms` | bool, optional/computed | Whether this VM may serve as a template for DispVMs. |
-| `provisioned` | bool, computed | True once created by this provider. |
+| `label` | string, required | Label color (red, blue, …). |
+| `template` | string, optional/computed | Base template. `"*default*"` = Qubes default; a name = that template. |
+| `properties` | map(string), optional/computed | **Any** qube property: `memory`, `maxmem`, `netvm`, `kernel`, `virt_mode`, `autostart`, `template_for_dispvms`, `guivm`, … Values are strings (Qubes-canonical, e.g. `"True"`); `"*default*"` = that property's current Qubes default; `""` clears a VM-valued property. |
+| `features` | map(string), optional/computed | Qube features (`vm.features`). |
+| `tags` | set(string), optional/computed | Tags this resource manages. Qubes auto-tags (`created-by-*`) are left alone and never reported. |
+| `shutdown_if_required` | bool, optional | If changing `template` needs the qube halted and it's running, shut it down first (mirrors Ansible). Default false → error instead. |
+| `force_shutdown` | bool, optional | Force the shutdown done for a template change. |
 
-A `qubes_vm` **data source** exposes the same fields plus `power_state`.
+Changing a running qube's `template` requires it halted; qubesd rejects it otherwise. With
+`shutdown_if_required = true` the provider shuts the qube down first (mirrors qubes-ansible's
+`_shutdown_for_template_update`); otherwise the apply fails with *"Cannot change the template
+while the qube is running."*
 
-`"*default*"` (the qubes-ansible sentinel) lets Qubes choose the value; it round-trips, so it
-produces no spurious diffs. qubesd has no literal `*default*`, and it refuses to *unset* some
-properties — e.g. an AppVM's `template` ("Cannot unset template; set it to the current default
-instead"). So the provider implements `*default*` as **"set the property to its current
-default value"** (resolved via `admin.vm.property.GetDefault`), which is a no-op when the
-value already equals the default. On read it reports `"*default*"` when the live value equals
-the current default. This needs only `property.Get`/`GetDefault` — no `property.Reset`.
+A `qubes_vm` **data source** looks a qube up by name; list keys under `properties`/`features`
+to read specific ones, plus `power_state`.
+
+### Design: the plugin knows nothing about individual properties
+
+Every Qubes tool (`qvm-prefs`, Salt's `qvm.prefs`, Ansible, backup/clone via
+`clone_properties`) mutates VMs the same way: a generic name→value bag through `qubesadmin`,
+letting **qubesd** be the source of truth for types, defaults, and constraints (e.g. "must be
+halted to change X"). This provider does the same — it just `setattr`s your strings and
+surfaces qubesd's validation errors as diagnostics. New Qubes properties work with **zero**
+plugin changes.
+
+`"*default*"` (the qubes-ansible/Salt sentinel) lets Qubes choose the value and round-trips
+with no spurious diffs. qubesd has no literal `*default*` and refuses to *unset* some
+properties (e.g. an AppVM `template`), so the provider implements `*default*` as "set the
+property's current default value" (via `admin.vm.property.GetDefault`) — a no-op at the
+default. Needs only `property.Get`/`GetDefault`; no `property.Reset`.
 
 ## Requirements
 

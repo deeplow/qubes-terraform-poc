@@ -8,25 +8,23 @@ terraform {
 
 provider "qubes" {}
 
-# Create an AppVM based on the fedora-40 template, on the firewall network.
+# An AppVM on the default template; properties is a generic bag passed to qubesd.
 resource "qubes_vm" "work_demo" {
   name     = "tf-work-demo"
   vm_class = "AppVM"
-  template = "fedora-43-xfce"
+  template = "*default*"
   label    = "blue"
-  memory   = 2048
-  netvm    = "*default*"
-}
 
-# Read an existing qube.
-#data "qubes_vm" "firewall" {
-#  name = "*default*"
-#}
+  properties = {
+    memory = "2048"
+    netvm  = "*default*"
+  }
+}
 
 output "work_template" {
   value = qubes_vm.work_demo.template
 }
 
-output "firewall_power_state" {
-  value = data.qubes_vm.firewall.power_state
+output "work_memory" {
+  value = qubes_vm.work_demo.properties["memory"]
 }

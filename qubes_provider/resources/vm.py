@@ -14,13 +14,18 @@ from tf.provider import Resource
 
 from ..client import (
     QubesProviderError,
+    as_dict,
+    as_set,
+    concrete,
     create_vm,
+    enforce_features,
     enforce_properties,
+    enforce_tags,
     get_app,
     get_vm,
     read_vm_state,
     remove_vm,
-    wants_from_planned,
+    shutdown_for_template_update,
 )
 
 
@@ -65,37 +70,73 @@ class QubesVMResource(Resource):
                 schema.Attribute(
                     "template", types.String(), optional=True, computed=True,
                     description=(
-                        'Template to base this VM on. "@default" uses the Qubes '
+                        'Template to base this VM on. "*default*" uses the Qubes '
                         "default template; a name uses that template."
                     ),
                 ),
+                # Generic bags: any qube property/feature/tag, passed through
+                # qubesadmin and validated by qubesd. Values are strings;
+                # "*default*" means the property's current Qubes default.
                 schema.Attribute(
-                    "memory", types.Number(), optional=True, computed=True,
-                    description="Initial memory (MB).",
-                ),
-                schema.Attribute(
-                    "maxmem", types.Number(), optional=True, computed=True,
-                    description="Maximum memory for ballooning (MB).",
-                ),
-                schema.Attribute(
-                    "netvm", types.String(), optional=True, computed=True,
+                    "properties", types.Map(types.String()),
+                    optional=True, computed=True,
                     description=(
-                        'NetVM providing network. "@default" uses the Qubes default '
-                        'netvm; "" means no network; a name uses that netvm.'
+                        "Qube properties (memory, maxmem, netvm, kernel, virt_mode, "
+                        "autostart, template_for_dispvms, guivm, ...). Any qubesd "
+                        'property; values are strings; "*default*" = Qubes default.'
                     ),
                 ),
                 schema.Attribute(
-                    "template_for_dispvms", types.Bool(), optional=True, computed=True,
-                    description="Whether this VM may serve as a template for DispVMs.",
+                    "features", types.Map(types.String()),
+                    optional=True, computed=True,
+                    description="Qube features (vm.features); string values.",
                 ),
                 schema.Attribute(
-                    "provisioned", types.Bool(), computed=True,
-                    description="True once the VM has been created by this provider.",
+                    "tags", types.Set(types.String()),
+                    optional=True, computed=True,
+                    description="Tags this resource manages (Qubes auto-tags untouched).",
+                ),
+                # Behavioral flags (mirror qubes-ansible), not qube properties.
+                schema.Attribute(
+                    "shutdown_if_required", types.Bool(), optional=True,
+                    description=(
+                        "If a template change needs the qube halted and it is running, "
+                        "shut it down first (default false -> error instead)."
+                    ),
+                ),
+                schema.Attribute(
+                    "force_shutdown", types.Bool(), optional=True,
+                    description="Force the shutdown done for a template change.",
                 ),
             ],
         )
 
     # --- CRUD ---------------------------------------------------------------
+
+    @staticmethod
+    def _prop_wants(planned: dict) -> dict:
+        """Property bag for enforce: the `properties` map plus the dedicated
+        `label`/`template` (which are also qube properties)."""
+        wants = dict(as_dict(planned.get("properties")))
+        wants["label"] = planned["label"]
+        if concrete(planned.get("template")):
+            wants["template"] = planned["template"]
+        return wants
+
+    def _enforce_all(self, app, vm, planned: dict, current: dict) -> None:
+        # Halt-before-template-change first (mirrors Ansible), then properties.
+        shutdown_for_template_update(app, vm, planned)
+        enforce_properties(app, vm, self._prop_wants(planned))
+        enforce_features(vm, as_dict(planned.get("features")), as_dict(current.get("features")))
+        enforce_tags(vm, as_set(planned.get("tags")), as_set(current.get("tags")))
+
+    @staticmethod
+    def _with_flags(state: Optional[dict], src: dict) -> Optional[dict]:
+        """Echo the behavioral flags into state (they are config, not qube state)."""
+        if state is not None:
+            state["shutdown_if_required"] = src.get("shutdown_if_required")
+            state["force_shutdown"] = src.get("force_shutdown")
+        return state
 
     def create(self, ctx: CreateContext, planned: dict) -> Optional[dict]:
         app = get_app()
@@ -107,8 +148,8 @@ class QubesVMResource(Resource):
             ctx.diagnostics.add_error("Failed to create qube", f"{name}: {exc}")
             return None
         try:
-            enforce_properties(app, vm, wants_from_planned(planned))
-            return read_vm_state(app, name, desired=planned)
+            self._enforce_all(app, vm, planned, {})
+            return self._with_flags(read_vm_state(app, name, desired=planned), planned)
         except (QubesProviderError, Exception) as exc:  # noqa: BLE001
             # roll back the partially-created qube so a retry isn't blocked by it.
             try:
@@ -123,7 +164,8 @@ class QubesVMResource(Resource):
             app = get_app()
             if current["name"] not in app.domains:
                 return None  # drifted / removed out-of-band -> Terraform recreates
-            return read_vm_state(app, current["name"], desired=current)
+            return self._with_flags(
+                read_vm_state(app, current["name"], desired=current), current)
         except (QubesProviderError, Exception) as exc:  # noqa: BLE001
             # e.g. qubesadmin.exc.QubesDaemonAccessError when qrexec policy denies access.
             ctx.diagnostics.add_error("Failed to read qube", str(exc))
@@ -138,8 +180,8 @@ class QubesVMResource(Resource):
                     "Qube disappeared", f"{name} no longer exists; cannot update."
                 )
                 return None
-            enforce_properties(app, get_vm(app, name), wants_from_planned(planned))
-            return read_vm_state(app, name, desired=planned)
+            self._enforce_all(app, get_vm(app, name), planned, current)
+            return self._with_flags(read_vm_state(app, name, desired=planned), planned)
         except (QubesProviderError, Exception) as exc:  # noqa: BLE001
             ctx.diagnostics.add_error("Failed to update qube", str(exc))
             return None

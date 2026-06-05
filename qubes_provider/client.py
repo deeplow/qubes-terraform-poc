@@ -1,31 +1,23 @@
-"""Admin API access, structured after the Qubes Ansible collection.
+"""Admin API access, structured after the Qubes Ansible/Salt collections.
 
-Mirrors ``qubes-ansible``'s ``qubes_helper`` + ``enforce_properties``: a generic
-property-enforce loop, ``refresh_cache`` before reads, typed error mapping, and a
-shutdown-before-template-change step.
+The provider intentionally encodes **no** per-property nuance. It passes a generic
+name->value bag through ``qubesadmin`` (the same client every Qubes tool uses) and
+lets **qubesd** be the source of truth for types, defaults and constraints (e.g.
+"VM must be halted to change X") — qubesd's errors surface as Terraform diagnostics.
 
-Note on ``"*default*"``: qubes-ansible expresses "default" by assigning
-``qubesadmin.DEFAULT`` (admin.vm.property.Reset). qubesd refuses that for some
-properties — notably an AppVM ``template`` ("Cannot unset template. You can set it
-to the current default ... instead"). So here ``"*default*"`` means "set the
-property to its current default value" (via admin.vm.property.GetDefault), which is
-a no-op when the property is already at its default. This avoids the Reset and
-works uniformly for ``template`` and ``netvm``.
+``"*default*"`` (the qubes-ansible/Salt sentinel) means "use the property's current
+default value" (via ``admin.vm.property.GetDefault``); it is a no-op when already at
+the default. qubesd refuses to *unset* some properties (e.g. an AppVM ``template``),
+so we set the default value rather than Reset.
 """
 
 from typing import Any, Optional
 
 from tf.types import Unknown
 
-# Sentinel string (identical to qubes-ansible) meaning "use the Qubes default".
 DEFAULT_TOKEN = "*default*"
-
-SETTABLE_PROPS = (
-    "label", "template", "netvm", "memory", "maxmem", "template_for_dispvms",
-)
-VM_REF_PROPS = ("template", "netvm")   # value is a VM (or None); supports "*default*"
-INT_PROPS = ("memory", "maxmem")
-HALT_REQUIRED_PROPS = ("template",)    # require the qube halted before changing
+# Handled as dedicated top-level attributes; never enforced via the properties bag.
+RESERVED_PROPS = ("name", "vm_class", "label", "template")
 
 
 class QubesProviderError(Exception):
@@ -45,8 +37,16 @@ def get_app():
 
 
 def concrete(value: Any) -> bool:
-    """True if ``value`` is a real, settable value (not None and not Unknown)."""
+    """True if ``value`` is a real value (not None and not the tf Unknown sentinel)."""
     return value is not None and value is not Unknown
+
+
+def as_dict(value) -> dict:
+    return dict(value) if concrete(value) else {}
+
+
+def as_set(value) -> set:
+    return set(value) if concrete(value) else set()
 
 
 # --- helpers mirroring qubes_helper.py -------------------------------------
@@ -77,7 +77,7 @@ def remove_vm(app, name: str) -> None:
     del app.domains[name]
 
 
-def shutdown_vm(vm) -> None:
+def shutdown_vm(vm, force: bool = False) -> None:
     """Shut down a qube and wait for it to halt (mirrors qubes_helper.shutdown)."""
     import asyncio  # noqa: PLC0415
     import contextlib  # noqa: PLC0415
@@ -86,7 +86,7 @@ def shutdown_vm(vm) -> None:
     from qubesadmin.exc import QubesVMNotStartedError  # noqa: PLC0415
 
     with contextlib.suppress(QubesVMNotStartedError):
-        vm.shutdown(force=True)
+        vm.shutdown(force=force)
     if vm.is_halted():
         return
     loop = asyncio.new_event_loop()
@@ -95,7 +95,7 @@ def shutdown_vm(vm) -> None:
         loop.run_until_complete(
             asyncio.wait_for(
                 qubesadmin.events.utils.wait_for_domain_shutdown([vm]),
-                vm.shutdown_timeout,
+                getattr(vm, "shutdown_timeout", 60),
             )
         )
     finally:
@@ -104,14 +104,7 @@ def shutdown_vm(vm) -> None:
 
 # --- value helpers ----------------------------------------------------------
 
-def _opt(vm, attr) -> Optional[Any]:
-    try:
-        return getattr(vm, attr)
-    except (AttributeError, KeyError):
-        return None
-
-
-def _get_or_absent(vm, attr):
+def _present(vm, attr):
     """(value, present); present=False if the class lacks the property."""
     try:
         return getattr(vm, attr), True
@@ -119,112 +112,146 @@ def _get_or_absent(vm, attr):
         return None, False
 
 
-def _norm(value):
-    """Normalize a live property value for comparison (VM/Label -> name; None -> "")."""
+def _str(value) -> str:
+    """Canonical string form of a live property value (VM/Label -> name; None -> "")."""
     if hasattr(value, "name"):
-        return value.name
-    if value is None:
-        return ""
-    if isinstance(value, (str, int, bool)):
-        return value
-    return str(value)
+        value = value.name
+    return "" if value is None else str(value)
 
 
-def default_value(app, vm, key: str) -> str:
-    """Current default value of a property (admin.vm.property.GetDefault), falling
-    back to the global ``app.default_<key>``. Returns its name or ""."""
+def _default_str(app, vm, key: str) -> str:
+    """Current default value of a property (GetDefault), as a string; "" if none."""
     try:
-        return _norm(vm.property_get_default(key))
+        return _str(vm.property_get_default(key))
     except Exception:  # noqa: BLE001 - GetDefault may be unsupported/denied
-        return _norm(getattr(app, "default_" + key, None))
+        return _str(getattr(app, "default_" + key, None))
+
+
+def shutdown_for_template_update(app, vm, planned: dict) -> None:
+    """Halt a running qube before a template change (mirrors qubes-ansible's
+    _shutdown_for_template_update). qubesd refuses to change template while running;
+    if ``shutdown_if_required`` shut it down first, else raise a clear error."""
+    template = planned.get("template")
+    if vm.klass == "StandaloneVM" or not concrete(template):
+        return
+    target = _default_str(app, vm, "template") if template == DEFAULT_TOKEN else template
+    current, present = _present(vm, "template")
+    if not present or _str(current) == target or vm.is_halted():
+        return
+    if planned.get("shutdown_if_required"):
+        shutdown_vm(vm, force=bool(planned.get("force_shutdown")))
+    else:
+        raise QubesProviderError(
+            (
+                "Cannot change the template while the qube is running.\n"
+                "If justified, please set 'shutdown_if_required = true'."
+            )
+        )
 
 
 # --- read ------------------------------------------------------------------
 
-def _read_ref(app, vm, key: str, desired: Optional[dict]) -> Optional[str]:
-    """Round-trip a VM-reference property: class lacks it -> None; no value -> "";
-    otherwise the VM name. If the config asked for "*default*" and the live value
-    equals the property's current default, report "*default*"."""
-    value, present = _get_or_absent(vm, key)
+def read_property(app, vm, key: str, desired: Optional[str]) -> Optional[str]:
+    """Read one property as a string. If the config asked for "*default*" and the
+    live value is (or equals) the property's current default, report "*default*"."""
+    value, present = _present(vm, key)
     if not present:
         return None
-    name = _norm(value)
-    if desired and desired.get(key) == DEFAULT_TOKEN and name == default_value(app, vm, key):
-        return DEFAULT_TOKEN
-    return name
+    if desired == DEFAULT_TOKEN:
+        try:
+            is_default = vm.property_is_default(key)
+        except (AttributeError, KeyError):
+            is_default = False
+        if is_default or _str(value) == _default_str(app, vm, key):
+            return DEFAULT_TOKEN
+    return _str(value)
+
+
+def _read_feature(vm, key: str) -> Optional[str]:
+    try:
+        return str(vm.features[key])
+    except KeyError:
+        return None
 
 
 def read_vm_state(app, name: str, desired: Optional[dict] = None) -> dict:
-    """Map a live Qubes VM onto the ``qubes_vm`` Terraform state shape.
-
-    ``desired`` (planned/prior config) lets ref-props round-trip ``"*default*"``.
-    """
+    """Map a live Qubes VM onto the ``qubes_vm`` Terraform state shape, reading back
+    only the properties/features/tags the config declared (so it round-trips)."""
+    desired = desired or {}
     app.domains.refresh_cache(force=True)
     vm = app.domains[name]
-    memory = _opt(vm, "memory")
-    maxmem = _opt(vm, "maxmem")
+    want_props = as_dict(desired.get("properties"))
+    want_feats = as_dict(desired.get("features"))
+    want_tags = as_set(desired.get("tags"))
+    props = {k: read_property(app, vm, k, want_props[k]) for k in want_props}
+    feats = {k: _read_feature(vm, k) for k in want_feats}
     return {
         "name": vm.name,
         "vm_class": vm.klass,
         "label": str(vm.label),
-        "template": _read_ref(app, vm, "template", desired),
-        "memory": int(memory) if memory is not None else None,
-        "maxmem": int(maxmem) if maxmem is not None else None,
-        "netvm": _read_ref(app, vm, "netvm", desired),
-        "template_for_dispvms": _opt(vm, "template_for_dispvms"),
-        "provisioned": True,
+        "template": read_property(app, vm, "template", desired.get("template")),
+        "properties": {k: v for k, v in props.items() if v is not None},
+        "features": {k: v for k, v in feats.items() if v is not None},
+        "tags": sorted(t for t in want_tags if t in vm.tags),
     }
 
 
-# --- enforce (mirrors qubes_module_qube.enforce_properties) ----------------
+# --- enforce (generic; mirrors qvm-prefs / Salt prefs / Ansible) -----------
 
-def wants_from_planned(planned: dict) -> dict:
-    """Concrete settable {name: value} from a planned config (drop Unknown/None)."""
-    return {k: planned[k] for k in SETTABLE_PROPS if concrete(planned.get(k))}
-
-
-def _shutdown_for_property_update(app, vm, wants: dict) -> None:
-    """Halt the qube before changing a property that requires it (mirrors
-    _shutdown_for_template_update). Only ``template`` qualifies for now."""
-    if vm.klass == "StandaloneVM" or "template" not in wants:
-        return
-    want = wants["template"]
-    current, present = _get_or_absent(vm, "template")
-    if not present:
-        return
-    target = default_value(app, vm, "template") if want == DEFAULT_TOKEN else want
-    if _norm(current) != target and not vm.is_halted():
-        shutdown_vm(vm)
-
-
-def enforce_properties(app, vm, wants: dict) -> None:
-    """Set each wanted property using the qubes-ansible pattern, but expressing
-    "*default*" as the current default value (qubesd forbids unsetting some props).
-    Writes only when the value changes; typed Admin API errors are mapped."""
+def enforce_properties(app, vm, props: dict) -> None:
+    """Set each property from a generic ``{name: value}`` map (string values).
+    ``"*default*"`` sets the current default value; otherwise the value is passed
+    through verbatim (qubesadmin coerces, qubesd validates). Writes only on change.
+    """
     from qubesadmin import exc as qexc  # noqa: PLC0415
 
-    _shutdown_for_property_update(app, vm, wants)
-
-    for name, want in wants.items():
+    for name, want in props.items():
+        if name in RESERVED_PROPS and name not in ("label", "template"):
+            continue
         try:
             if want == DEFAULT_TOKEN:
-                if name not in VM_REF_PROPS:
-                    continue  # "*default*" only meaningful for VM-reference props
-                target = default_value(app, vm, name)
-                if _norm(_opt(vm, name)) != target:
+                target = _default_str(app, vm, name)
+                if _str(_present(vm, name)[0]) != target:
                     setattr(vm, name, target or None)
                 continue
-
-            if vm.property_is_default(name):
-                before = DEFAULT_TOKEN
-            else:
-                before = _norm(getattr(vm, name))
-            value_to_set = int(want) if name in INT_PROPS else want
-            if before != value_to_set:
-                setattr(vm, name, value_to_set)
+            try:
+                before = DEFAULT_TOKEN if vm.property_is_default(name) else _str(getattr(vm, name))
+            except (AttributeError, KeyError):
+                before = None
+            if before != want:
+                setattr(vm, name, want)
         except qexc.QubesNoSuchPropertyError as exc:
             raise QubesProviderError(f"invalid property '{name}'") from exc
         except qexc.QubesValueError as exc:
             raise QubesProviderError(f"invalid value for '{name}': {exc}") from exc
         except qexc.QubesException as exc:
             raise QubesProviderError(f"error setting '{name}': {exc}") from exc
+
+
+def enforce_features(vm, planned: dict, current: dict) -> None:
+    """Apply a generic feature map; remove features dropped from the config."""
+    from qubesadmin import exc as qexc  # noqa: PLC0415
+
+    try:
+        for key, value in planned.items():
+            if _read_feature(vm, key) != str(value):
+                vm.features[key] = value
+        for key in current:
+            if key not in planned and key in vm.features:
+                del vm.features[key]
+    except qexc.QubesException as exc:
+        raise QubesProviderError(f"error setting feature: {exc}") from exc
+
+
+def enforce_tags(vm, planned: set, current: set) -> None:
+    """Ensure the declared tags are present; remove ones dropped from the config
+    (only ever touches tags this resource declares — Qubes auto-tags are untouched)."""
+    from qubesadmin import exc as qexc  # noqa: PLC0415
+
+    try:
+        for tag in planned - current:
+            vm.tags.add(tag)
+        for tag in current - planned:
+            vm.tags.discard(tag)
+    except qexc.QubesException as exc:
+        raise QubesProviderError(f"error setting tag: {exc}") from exc

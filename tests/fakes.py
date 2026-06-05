@@ -45,6 +45,8 @@ class FakeVM:
         object.__setattr__(self, "_running", False)
         object.__setattr__(self, "shutdown_timeout", 60)
         object.__setattr__(self, "writes", [])  # managed-property writes, for idempotency tests
+        object.__setattr__(self, "features", {})   # dict-like, like vm.features
+        object.__setattr__(self, "tags", set())    # set-like, like vm.tags
         self._props["label"] = label  # label is explicit, never default-following
         # netvm/memory/maxmem/template_for_dispvms start default-following.
         for p in ("netvm", "memory", "maxmem", "template_for_dispvms"):
