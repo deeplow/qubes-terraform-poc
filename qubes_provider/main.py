@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Executable entry point: serve the Terraform plugin protocol over gRPC.
 
 Terraform/OpenTofu launches this as ``terraform-provider-qubes``. ``run_provider``

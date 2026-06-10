@@ -8,7 +8,10 @@ version = "0.1.0"
 description = "Terraform/OpenTofu provider for Qubes OS, bound to the Python Admin API (qubesadmin)"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = { text = "GPL-3.0-or-later" }
+classifiers = [
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+]
 dependencies = [
     "tf>=1.2.0",
     # NOTE: `qubesadmin` is shipped by Qubes OS (the qubes-core-admin-client RPM),

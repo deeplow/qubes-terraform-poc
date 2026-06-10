@@ -1,4 +1,12 @@
-"""The ``qubes_vm`` managed resource: full CRUD for a Qubes VM."""
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""The ``qubes_vm`` managed resource: full CRUD for a Qubes VM.
+
+CRUD is delegated to the bundled qubes-ansible collection via the
+:class:`~qubes_provider.qubes_adapter.QubesVmAdapter` (the seam). This resource
+only adds Terraform's model on top: roll back a failed create and echo the
+behavioral flags into state — the adapter handles translation, projection onto the
+declared subset, and converging removals.
+"""
 
 from typing import Optional
 
@@ -12,35 +20,20 @@ from tf.iface import (
 )
 from tf.provider import Resource
 
-from ..client import (
-    QubesProviderError,
-    as_dict,
-    as_set,
-    concrete,
-    create_vm,
-    enforce_features,
-    enforce_properties,
-    enforce_tags,
-    get_app,
-    get_vm,
-    read_vm_state,
-    remove_vm,
-    shutdown_for_template_update,
-)
+from ..qubes_adapter import QubesVmAdapter
 
 
 class QubesVMResource(Resource):
-    """Maps a Terraform resource onto a Qubes domain via the Admin API.
+    """Maps a Terraform resource onto a Qubes domain, via the QubesVmAdapter.
 
-    CRUD -> qubesadmin -> Admin API:
-      create -> app.add_new_vm(...)            -> admin.vm.Create.<class>
-      read   -> app.domains[name] / props      -> admin.vm.property.Get
-      update -> vm.<prop> = value              -> admin.vm.property.Set
-      delete -> del app.domains[name]          -> admin.vm.Remove
+      create/update -> qubes.create_or_update
+      read          -> qubes.read_vm
+      delete        -> qubes.delete
     """
 
-    def __init__(self, provider):
+    def __init__(self, provider, backend=None):
         self.provider = provider
+        self.qubes = backend or QubesVmAdapter()  # injectable for tests
 
     @classmethod
     def get_name(cls) -> str:
@@ -60,7 +53,7 @@ class QubesVMResource(Resource):
                 ),
                 # VM class cannot be changed in place.
                 schema.Attribute(
-                    "vm_class", types.String(), required=True, requires_replace=True,
+                    "klass", types.String(), required=True, requires_replace=True,
                     description="Qubes VM class: AppVM, TemplateVM, StandaloneVM, DispVM.",
                 ),
                 schema.Attribute(
@@ -75,7 +68,7 @@ class QubesVMResource(Resource):
                     ),
                 ),
                 # Generic bags: any qube property/feature/tag, passed through
-                # qubesadmin and validated by qubesd. Values are strings;
+                # qubes-ansible and validated by qubesd. Values are strings;
                 # "*default*" means the property's current Qubes default.
                 schema.Attribute(
                     "properties", types.Map(types.String()),
@@ -88,13 +81,20 @@ class QubesVMResource(Resource):
                 ),
                 schema.Attribute(
                     "features", types.Map(types.String()),
-                    optional=True, computed=True,
-                    description="Qube features (vm.features); string values.",
+                    optional=True,
+                    description=(
+                        "Qube features (vm.features); string values. Config-authoritative: "
+                        "deleting/clearing the block removes the declared keys; system-set "
+                        "features are never touched."
+                    ),
                 ),
                 schema.Attribute(
                     "tags", types.Set(types.String()),
-                    optional=True, computed=True,
-                    description="Tags this resource manages (Qubes auto-tags untouched).",
+                    optional=True,
+                    description=(
+                        "Tags this resource manages. Config-authoritative: deleting/clearing "
+                        "the block removes the declared tags; Qubes auto-tags are never touched."
+                    ),
                 ),
                 # Behavioral flags (mirror qubes-ansible), not qube properties.
                 schema.Attribute(
@@ -108,98 +108,91 @@ class QubesVMResource(Resource):
                     "force_shutdown", types.Bool(), optional=True,
                     description="Force the shutdown done for a template change.",
                 ),
+                # --- capabilities delegated to qubes-ansible ----------------
+                schema.Attribute(
+                    "clone_src", types.String(), optional=True, requires_replace=True,
+                    description=(
+                        "Create this qube by cloning an existing one (its volumes "
+                        "and prefs), instead of from a template."
+                    ),
+                ),
+                schema.Attribute(
+                    "volumes", types.Map(types.Map(types.String())),
+                    optional=True, computed=True,
+                    description=(
+                        'Volume config, e.g. { private = { size = "5368709120" } }. '
+                        "Size is in bytes (matching qubes-ansible); volumes are grow-only."
+                    ),
+                ),
+                schema.Attribute(
+                    "services", types.Set(types.String()),
+                    optional=True,
+                    description=(
+                        'Qubes services to enable (sets feature "service.<x>"). '
+                        "Config-authoritative: deleting/clearing the block disables the "
+                        "declared services."
+                    ),
+                ),
+                schema.Attribute(
+                    "notes", types.String(), optional=True, computed=True,
+                    description="Free-form qube notes.",
+                ),
+                schema.Attribute(
+                    "devices", types.NormalizedJson(), optional=True,
+                    description=(
+                        "Device assignments (raw qubes-ansible form): a list of "
+                        '"class:backend:port:devid" specs, or {strategy, items}.'
+                    ),
+                ),
             ],
         )
 
     # --- CRUD ---------------------------------------------------------------
 
-    @staticmethod
-    def _prop_wants(planned: dict) -> dict:
-        """Property bag for enforce: the `properties` map plus the dedicated
-        `label`/`template` (which are also qube properties)."""
-        wants = dict(as_dict(planned.get("properties")))
-        wants["label"] = planned["label"]
-        if concrete(planned.get("template")):
-            wants["template"] = planned["template"]
-        return wants
-
-    def _enforce_all(self, app, vm, planned: dict, current: dict) -> None:
-        # Halt-before-template-change first (mirrors Ansible), then properties.
-        shutdown_for_template_update(app, vm, planned)
-        enforce_properties(app, vm, self._prop_wants(planned))
-        enforce_features(vm, as_dict(planned.get("features")), as_dict(current.get("features")))
-        enforce_tags(vm, as_set(planned.get("tags")), as_set(current.get("tags")))
-
-    @staticmethod
-    def _with_flags(state: Optional[dict], src: dict) -> Optional[dict]:
-        """Echo the behavioral flags into state (they are config, not qube state)."""
-        if state is not None:
-            state["shutdown_if_required"] = src.get("shutdown_if_required")
-            state["force_shutdown"] = src.get("force_shutdown")
-        return state
-
     def create(self, ctx: CreateContext, planned: dict) -> Optional[dict]:
-        app = get_app()
         name = planned["name"]
         try:
-            vm = create_vm(app, name, planned["vm_class"],
-                           planned["label"], planned.get("template"))
-        except (QubesProviderError, Exception) as exc:  # noqa: BLE001
+            self.qubes.create_or_update(planned)
+        except Exception as exc:  # noqa: BLE001
+            self.qubes.try_delete(name)  # roll back so a retry isn't blocked
             ctx.diagnostics.add_error("Failed to create qube", f"{name}: {exc}")
             return None
         try:
-            self._enforce_all(app, vm, planned, {})
-            return self._with_flags(read_vm_state(app, name, desired=planned), planned)
-        except (QubesProviderError, Exception) as exc:  # noqa: BLE001
-            # roll back the partially-created qube so a retry isn't blocked by it.
-            try:
-                remove_vm(app, name)
-            except Exception:  # noqa: BLE001
-                pass
-            ctx.diagnostics.add_error("Failed to create qube", f"{name}: {exc}")
+            return self.qubes.read_vm(name, planned)
+        except Exception as exc:  # noqa: BLE001
+            ctx.diagnostics.add_error("Failed to read qube", f"{name}: {exc}")
             return None
 
     def read(self, ctx: ReadContext, current: dict) -> Optional[dict]:
         try:
-            app = get_app()
-            if current["name"] not in app.domains:
-                return None  # drifted / removed out-of-band -> Terraform recreates
-            return self._with_flags(
-                read_vm_state(app, current["name"], desired=current), current)
-        except (QubesProviderError, Exception) as exc:  # noqa: BLE001
-            # e.g. qubesadmin.exc.QubesDaemonAccessError when qrexec policy denies access.
+            return self.qubes.read_vm(current["name"], current)
+        except Exception as exc:  # noqa: BLE001
+            # e.g. QubesDaemonAccessError when qrexec policy denies access.
             ctx.diagnostics.add_error("Failed to read qube", str(exc))
             return None
 
     def update(self, ctx: UpdateContext, current: dict, planned: dict) -> Optional[dict]:
         try:
-            app = get_app()
-            name = current["name"]
-            if name not in app.domains:
-                ctx.diagnostics.add_error(
-                    "Qube disappeared", f"{name} no longer exists; cannot update."
-                )
-                return None
-            self._enforce_all(app, get_vm(app, name), planned, current)
-            return self._with_flags(read_vm_state(app, name, desired=planned), planned)
-        except (QubesProviderError, Exception) as exc:  # noqa: BLE001
+            self.qubes.create_or_update(planned, prior=current)
+            return self.qubes.read_vm(planned["name"], planned)
+        except Exception as exc:  # noqa: BLE001
             ctx.diagnostics.add_error("Failed to update qube", str(exc))
             return None
 
     def delete(self, ctx: DeleteContext, current: dict):
         try:
-            remove_vm(get_app(), current["name"])
-        except (QubesProviderError, Exception) as exc:  # noqa: BLE001
+            self.qubes.delete(current["name"])
+        except Exception as exc:  # noqa: BLE001
             ctx.diagnostics.add_error("Failed to delete qube", str(exc))
 
     def import_(self, ctx: ImportContext, id: str) -> Optional[dict]:
         """Adopt an existing qube into Terraform state by name."""
         try:
-            app = get_app()
-            if id not in app.domains:
+            state = self.qubes.read_vm(id, {})
+            if state is None:
                 ctx.diagnostics.add_error("No such qube", f"Cannot import {id!r}.")
                 return None
-            return read_vm_state(app, id)
-        except (QubesProviderError, Exception) as exc:  # noqa: BLE001
+            return state
+        except Exception as exc:  # noqa: BLE001
             ctx.diagnostics.add_error("Failed to import qube", str(exc))
             return None

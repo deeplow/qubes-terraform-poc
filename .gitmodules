@@ -1,0 +1,4 @@
+[submodule "qubes_provider/helpers/qubes_ansible"]
+	path = qubes_provider/helpers/qubes_ansible
+	url = https://github.com/QubesOS/qubes-ansible
+	ignore = all

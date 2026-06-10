@@ -14,7 +14,7 @@ provider "qubes" {}
 #     values are strings, "*default*" means the property's current Qubes default.
 resource "qubes_vm" "alpha" {
   name     = "tf-playground-alpha"
-  vm_class = "AppVM"
+  klass = "AppVM"
   label    = "red"
   template = "*default*"
 
@@ -25,6 +25,11 @@ resource "qubes_vm" "alpha" {
 
   tags = ["tf-playground"]
 
+  # Grow the private volume. Size is in bytes (matching qubes-ansible).
+  volumes = {
+    private = { size = "10368709120" } # 5 GiB
+  }
+
   # If the qube is running when its template changes, halt it first.
   shutdown_if_required = true
 }
@@ -32,7 +37,7 @@ resource "qubes_vm" "alpha" {
 # A DispVM based on alpha (which is a dispvm template via the property above).
 resource "qubes_vm" "beta" {
   name     = "tf-playground-beta"
-  vm_class = "DispVM"
+  klass = "DispVM"
   label    = "purple"
   template = qubes_vm.alpha.name
 
@@ -41,19 +46,12 @@ resource "qubes_vm" "beta" {
   force_shutdown       = true
 }
 
-data "qubes_vm" "alpha" {
-  name       = qubes_vm.alpha.name
-  properties = { netvm = "" }
-  depends_on = [qubes_vm.alpha]
-}
-
 output "alpha" {
   value = {
     name        = qubes_vm.alpha.name
     template    = qubes_vm.alpha.template # "*default*"
     properties  = qubes_vm.alpha.properties
     tags        = qubes_vm.alpha.tags
-    power_state = data.qubes_vm.alpha.power_state
   }
 }
 

@@ -11,7 +11,7 @@ provider "qubes" {}
 # An AppVM on the default template; properties is a generic bag passed to qubesd.
 resource "qubes_vm" "work_demo" {
   name     = "tf-work-demo"
-  vm_class = "AppVM"
+  klass = "AppVM"
   template = "*default*"
   label    = "blue"
 

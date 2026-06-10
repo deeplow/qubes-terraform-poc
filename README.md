@@ -6,7 +6,7 @@ to the Qubes **Python Admin API** (`qubesadmin`). Manage qubes declaratively:
 ```hcl
 resource "qubes_vm" "work" {
   name     = "tf-work"
-  vm_class = "AppVM"
+  klass = "AppVM"
   label    = "blue"
   template = "*default*"
 
@@ -14,8 +14,9 @@ resource "qubes_vm" "work" {
     memory = "2048"
     netvm  = "sys-firewall"
   }
-  features = { "service.qubes-firewall" = "1" }
+  services = ["qubes-firewall"]
   tags     = ["team-x"]
+  volumes  = { private = { size = "21474836480" } } # bytes (20 GiB)
 }
 ```
 
@@ -24,14 +25,26 @@ resource "qubes_vm" "work" {
 Terraform/OpenTofu providers are plugins that speak a gRPC-based protocol over the
 HashiCorp go-plugin handshake (historically Go-only). This provider uses
 [**python-tf**](https://github.com/hfern/tf) (`pip install tf`, MIT), a pure-Python
-implementation of **Terraform plugin protocol v6**, so the plugin can be written in
-Python and call `qubesadmin` in-process:
+implementation of **Terraform plugin protocol v6**, so the plugin can be written in Python.
+
+Rather than re-implement Qubes VM lifecycle logic, the provider **delegates** to the bundled
+[**qubes-ansible**](https://github.com/QubesOS/qubes-ansible) collection (a git submodule under
+`qubes_provider/helpers/qubes_ansible/`), driving its `QubeModule` (writes) and `qube_facts`
+(reads) in-process. A single **Adapter** (`qubes_adapter.QubesVmAdapter`) is the seam: it
+translates Terraform state ⇄ qube params/facts and runs those modules through an
+`AnsibleModuleShim` that supplies the only `AnsibleModule` contract they use
+(`params` / `fail_json` / `exit_json`) — **no Ansible runtime is installed or needed**.
+qubes-ansible in turn talks to `qubesadmin`, and `qubesd` remains the source of truth for types,
+defaults and constraints.
 
 ```
 OpenTofu/Terraform CLI
    │  go-plugin handshake + gRPC (protocol v6, mTLS)
    ▼
 terraform-provider-qubes  (this Python process)
+   │  qubes_adapter.QubesVmAdapter: state <-> params/facts, via AnsibleModuleShim
+   ▼
+qubes-ansible collection  (bundled submodule, GPL-3.0)
    │  import qubesadmin; app = qubesadmin.Qubes()
    ▼
 qubesd  (local socket in dom0, OR qrexec admin.vm.* from a management qube)
@@ -42,63 +55,74 @@ libvirtd / qubes.xml
 `qubesadmin.Qubes()` auto-detects its transport, so the same provider works in **dom0**
 (local `qubesd` socket) or in a **management qube** (qrexec, gated by Admin API policy).
 
-CRUD maps onto the Admin API:
+CRUD calls the adapter, which delegates to qubes-ansible:
 
-| Terraform | qubesadmin | Admin API |
+| Terraform | adapter method → qubes-ansible | Notes |
 |---|---|---|
-| create | `app.add_new_vm(cls, name, label, template)` | `admin.vm.Create.<class>` |
-| read | `app.domains[name]` + properties | `admin.vm.property.Get` |
-| update | `vm.<prop> = value` | `admin.vm.property.Set` |
-| delete | `del app.domains[name]` | `admin.vm.Remove` |
-| import | `terraform import qubes_vm.x <name>` | `admin.vm.List` |
+| create / update | `create_or_update` → `QubeModule.run()` (`state: present`) | create or clone, then enforce properties/volumes/devices/features/tags/notes; update also prunes de-declared tags/features/services |
+| read | `read_vm` → `qube_facts.core()` | projected onto the declared subset; `"*default*"` round-trips |
+| delete | `delete` → `QubeModule.run()` (`state: absent`) | |
+| import | `terraform import qubes_vm.x <name>` | reads the qube into state |
+
+The genuinely Terraform-specific behavior lives in the adapter (or, for rollback, the resource):
+projecting reads onto the *declared* subset (no spurious diffs), **converging removals**
+(qubes-ansible only adds tags/features/services; Terraform removes ones dropped from config), and
+rolling back a failed create.
 
 ## The `qubes_vm` resource
 
-Only the four `qvm-create` args are typed; everything else is a **generic bag** passed
-straight through `qubesadmin` and validated by **qubesd** — so the provider doesn't hardcode
-(or need to track) individual properties.
+Identity (`name`, `klass`, `label`) is typed; everything else is a **generic bag** passed
+straight through qubes-ansible to `qubesadmin` and validated by **qubesd** — so the provider
+doesn't hardcode (or need to track) individual properties.
 
 | Attribute | Type | Notes |
 |---|---|---|
 | `name` | string, required | Unique VM name. Changing it replaces the resource. |
-| `vm_class` | string, required | `AppVM`, `TemplateVM`, `StandaloneVM`, `DispVM`. Replaces on change. |
+| `klass` | string, required | `AppVM`, `TemplateVM`, `StandaloneVM`, `DispVM`. Replaces on change. |
 | `label` | string, required | Label color (red, blue, …). |
 | `template` | string, optional/computed | Base template. `"*default*"` = Qubes default; a name = that template. |
+| `clone_src` | string, optional | Create this qube by **cloning** an existing one (its volumes + prefs) instead of from a template. Replaces on change. |
 | `properties` | map(string), optional/computed | **Any** qube property: `memory`, `maxmem`, `netvm`, `kernel`, `virt_mode`, `autostart`, `template_for_dispvms`, `guivm`, … Values are strings (Qubes-canonical, e.g. `"True"`); `"*default*"` = that property's current Qubes default; `""` clears a VM-valued property. |
-| `features` | map(string), optional/computed | Qube features (`vm.features`). |
-| `tags` | set(string), optional/computed | Tags this resource manages. Qubes auto-tags (`created-by-*`) are left alone and never reported. |
-| `shutdown_if_required` | bool, optional | If changing `template` needs the qube halted and it's running, shut it down first (mirrors Ansible). Default false → error instead. |
+| `features` | map(string), optional | Qube features (`vm.features`). Config-authoritative: deleting/clearing the block removes the declared keys (system-set features untouched). |
+| `services` | set(string), optional | Qubes services to enable — sugar for the `service.<x>` feature. Config-authoritative: deleting/clearing the block disables the declared services. |
+| `tags` | set(string), optional | Tags this resource manages. Config-authoritative: deleting/clearing the block removes the declared tags. Qubes auto-tags (`created-by-*`) are left alone and never reported. |
+| `volumes` | map(map(string)), optional/computed | Per-volume config, e.g. `{ private = { size = "5368709120" } }`. Size is in **bytes** (matching qubes-ansible); volumes are **grow-only**. Also `revisions_to_keep`. |
+| `devices` | json, optional | Device assignments in qubes-ansible's raw form: a list of `"class:backend:port:devid"` specs, or `{ strategy = "strict"\|"append", items = [...] }`. |
+| `notes` | string, optional/computed | Free-form qube notes. |
+| `shutdown_if_required` | bool, optional | If changing `template` needs the qube halted and it's running, shut it down first. Default false → error instead. |
 | `force_shutdown` | bool, optional | Force the shutdown done for a template change. |
 
+`clone_src`, `services`, `volumes`, `devices` and `notes` are all backed by
+qubes-ansible's `QubeModule`. Tags, features and services are **converged**: declaring one adds
+it, and removing it from the config removes it from the qube (Qubes auto-tags are never touched).
+
 Changing a running qube's `template` requires it halted; qubesd rejects it otherwise. With
-`shutdown_if_required = true` the provider shuts the qube down first (mirrors qubes-ansible's
+`shutdown_if_required = true` the provider shuts the qube down first (qubes-ansible's
 `_shutdown_for_template_update`); otherwise the apply fails with *"Cannot change the template
 while the qube is running."*
 
-A `qubes_vm` **data source** looks a qube up by name; list keys under `properties`/`features`
-to read specific ones, plus `power_state`.
+### Design: delegate, don't re-implement
 
-### Design: the plugin knows nothing about individual properties
+Qubes VM lifecycle has real nuances (must-be-halted-to-change-X, clone vs create, default
+sentinels, device assignment modes). Rather than copy them, this provider drives the
+**qubes-ansible** collection, which already encodes them, and lets **qubesd** validate. New
+qube properties work with **zero** plugin changes — `properties` is a generic name→value bag.
 
-Every Qubes tool (`qvm-prefs`, Salt's `qvm.prefs`, Ansible, backup/clone via
-`clone_properties`) mutates VMs the same way: a generic name→value bag through `qubesadmin`,
-letting **qubesd** be the source of truth for types, defaults, and constraints (e.g. "must be
-halted to change X"). This provider does the same — it just `setattr`s your strings and
-surfaces qubesd's validation errors as diagnostics. New Qubes properties work with **zero**
-plugin changes.
-
-`"*default*"` (the qubes-ansible/Salt sentinel) lets Qubes choose the value and round-trips
-with no spurious diffs. qubesd has no literal `*default*` and refuses to *unset* some
-properties (e.g. an AppVM `template`), so the provider implements `*default*` as "set the
-property's current default value" (via `admin.vm.property.GetDefault`) — a no-op at the
-default. Needs only `property.Get`/`GetDefault`; no `property.Reset`.
+`"*default*"` (the qubes-ansible/Salt sentinel) lets Qubes choose a property's value and
+round-trips with no spurious diffs (via `qube_facts`' `default_properties`). The provider's own
+code is just the Terraform-shaped layer on top: a managed-subset read projection, declarative
+removal of de-declared tags/features/services, create rollback, and the gRPC/schema plumbing.
 
 ## Requirements
 
 - **Python 3.11+**.
 - **`qubesadmin`** — shipped by Qubes (`qubes-core-admin-client`), present in **dom0** and
   in management qubes. It is *not* on PyPI, so it lives in the **system** Python; the venv
-  must be allowed to see system site-packages (see Install).
+  must be allowed to see system site-packages (see Install). Device assignment uses the newer
+  `qubesadmin.device_protocol` API (Qubes **4.3+**); other features work on older qubesadmin.
+- The bundled **qubes-ansible** git submodule (no Ansible runtime required — the provider only
+  imports the collection's Python and supplies its own `AnsibleModule` shim). After cloning:
+  `git submodule update --init`.
 - Terraform ≥ 1.0 or any OpenTofu (both support plugin protocol v6).
 
 ## Install
@@ -171,6 +195,10 @@ admin.vm.property.Set	*	work		@tag:created-by-work	target=dom0
 admin.vm.CurrentState	*	work		@tag:created-by-work	target=dom0
 ```
 
+The capabilities added on top need their own verbs as you use them: `admin.vm.volume.Resize`
+(volumes), `admin.vm.device.*.Attach`/`Detach`/`List` (devices), and `admin.vm.Clone`
+(`clone_src`).
+
 Scope as tightly as your use case allows. Otherwise, the following `include/admin-global-ro` may help:
 
 ```
@@ -188,8 +216,12 @@ work	@tag:created-by-work	allow	target=@adminvm
 
 ```bash
 .venv/bin/pip install -e ".[dev]"
-.venv/bin/pytest -q          # 14 tests; mocks qubesadmin, no Qubes required
+.venv/bin/pytest -q          # no Qubes required: the suite drives the real qubes-ansible
+                             # QubeModule/qube_facts against in-memory fakes
 ```
+
+The tests run the bundled qubes-ansible modules against fakes (`tests/fakes.py`,
+`install_qube_fakes`), so they exercise the actual delegation path without a live `qubesd`.
 
 Smoke-test the plugin handshake (should print `1|6|unix|<sock>|grpc|<cert>`):
 
@@ -199,10 +231,17 @@ Smoke-test the plugin handshake (should print `1|6|unix|<sock>|grpc|<cert>`):
 
 ## Status
 
-Phase 1: `qubes_vm` resource (full CRUD + import) and `qubes_vm` data source.
-Planned next: broader properties (kernel, virt_mode, autostart, services, tags),
-`qubes_firewall`, volumes/devices, and CI against both `terraform` and `tofu`.
+`qubes_vm` resource (full CRUD + import), delegating to
+qubes-ansible: properties, features, services, tags, volumes, devices, notes, and clone.
+Planned next: dom0 global preferences (`default_template`/`default_dispvm`),
+`qubes_firewall`, and CI against both `terraform` and `tofu`.
 
 ## License
 
-MIT.
+GPL-3.0-or-later.
+
+This provider delegates its VM lifecycle logic to the bundled
+[qubes-ansible](https://github.com/QubesOS/qubes-ansible) collection (under
+`qubes_provider/helpers/qubes_ansible/`), which it imports and runs in-process. qubes-ansible is
+licensed GPL-3.0-or-later, so the provider is too. The bundled submodule retains its own copyright
+and license headers.

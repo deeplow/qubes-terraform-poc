@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """The Qubes provider definition."""
 
 from typing import Type
@@ -7,7 +8,6 @@ from tf import schema
 from tf.provider import DataSource, Resource
 from tf.utils import Diagnostics
 
-from .data_sources.vm import QubesVMDataSource
 from .resources.vm import QubesVMResource
 
 
@@ -37,4 +37,4 @@ class QubesProvider(p.Provider):
         return [QubesVMResource]
 
     def get_data_sources(self) -> list[Type[DataSource]]:
-        return [QubesVMDataSource]
+        return []
