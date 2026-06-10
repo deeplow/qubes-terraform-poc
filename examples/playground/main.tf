@@ -26,9 +26,9 @@ resource "qubes_vm" "alpha" {
   tags = ["tf-playground"]
 
   # Grow the private volume. Size is in bytes (matching qubes-ansible).
-  volumes = {
-    private = { size = "10368709120" } # 5 GiB
-  }
+  # volumes = {
+  #   private = { size = "10368709120" } # 5 GiB
+  # }
 
   # If the qube is running when its template changes, halt it first.
   shutdown_if_required = true

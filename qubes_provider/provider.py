@@ -8,6 +8,13 @@ from tf import schema
 from tf.provider import DataSource, Resource
 from tf.utils import Diagnostics
 
+from .data_sources.system import (
+    QubesDeviceClassDataSource,
+    QubesLabelDataSource,
+    QubesPoolDataSource,
+    QubesPropertyDataSource,
+    QubesVMClassDataSource,
+)
 from .resources.vm import QubesVMResource
 
 
@@ -37,4 +44,10 @@ class QubesProvider(p.Provider):
         return [QubesVMResource]
 
     def get_data_sources(self) -> list[Type[DataSource]]:
-        return []
+        return [
+            QubesPropertyDataSource,
+            QubesLabelDataSource,
+            QubesPoolDataSource,
+            QubesVMClassDataSource,
+            QubesDeviceClassDataSource,
+        ]

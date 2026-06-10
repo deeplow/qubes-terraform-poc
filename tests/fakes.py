@@ -282,8 +282,26 @@ class FakeDomains:
         self._d[vm.name] = vm
 
 
+class _FakeAppLabel:
+    """A label in ``app.labels`` (has .index and .color, like qubesadmin's Label)."""
+
+    def __init__(self, index, color):
+        self.index = index
+        self.color = color
+
+
+class _FakePool:
+    """A pool in ``app.pools`` (driver + optional usage/size, like qubesadmin's Pool)."""
+
+    def __init__(self, driver, usage=None, size=None):
+        self.driver = driver
+        self.usage = usage
+        self.size = size
+
+
 class FakeApp:
-    """Stands in for ``qubesadmin.Qubes()``."""
+    """Stands in for ``qubesadmin.Qubes()`` — domains plus the dom0/system-wide
+    catalog (global properties, labels, pools, vm/device classes)."""
 
     def __init__(self):
         self.domains = FakeDomains()
@@ -291,6 +309,60 @@ class FakeApp:
         netvm = FakeVM("sys-firewall", "AppVM", "green")
         object.__setattr__(netvm, "provides_network", True)
         self.domains.add(netvm)
+
+        # dom0 global properties (admin.property.*). VM-valued ones return a VM
+        # object (-> .name); a couple are at their Qubes default.
+        self._global_props = {
+            "default_template": self.domains["fedora-40"],
+            "default_netvm": self.domains["sys-firewall"],
+            "default_dispvm": "",
+            "clockvm": self.domains["sys-firewall"],
+            "default_kernel": "6.18.31",
+            "default_qrexec_timeout": 60,
+            "check_updates_vm": True,
+        }
+        self._global_defaults = {"default_qrexec_timeout", "check_updates_vm"}
+
+        self.labels = {
+            "red": _FakeAppLabel(1, "0xcc0000"),
+            "blue": _FakeAppLabel(6, "0x3465a4"),
+            "black": _FakeAppLabel(8, "0x000000"),
+        }
+        self.pools = {
+            "vm-pool": _FakePool("lvm_thin", usage=1219867699052, size=1775385968640),
+            "varlibqubes": _FakePool("file", usage=16752549888, size=20957446144),
+            "linux-kernel": _FakePool("linux-kernel"),   # usage/size None -> omitted
+        }
+        self.pool_drivers = ["callback", "file", "file-reflink", "linux-kernel",
+                             "lvm_thin", "zfs"]
+
+    # --- dom0 global properties (PropertyHolder semantics) ------------------
+
+    def property_list(self):
+        return list(self._global_props)
+
+    def property_is_default(self, name):
+        return name in self._global_defaults
+
+    def __getattr__(self, name):
+        # Global properties are exposed as attributes (like qubesadmin's app).
+        try:
+            props = object.__getattribute__(self, "_global_props")
+        except AttributeError:
+            raise AttributeError(name)
+        if name in props:
+            return props[name]
+        raise AttributeError(name)
+
+    # --- catalogs -----------------------------------------------------------
+
+    def list_vmclass(self):
+        return ["AdminVM", "AppVM", "DispVM", "StandaloneVM", "TemplateVM"]
+
+    def list_deviceclass(self):
+        return ["pci", "usb", "block", "mic"]
+
+    # --- VM lifecycle (used by the qube modules) ----------------------------
 
     def add_new_vm(self, cls, name, label, template=None, pool=None, pools=None):
         vm = FakeVM(name, cls, label, template=template)
@@ -304,9 +376,6 @@ class FakeApp:
         vm = FakeVM(new_name, new_cls or src.klass, str(src.label), template=template)
         self.domains.add(vm)
         return vm
-
-    def list_deviceclass(self):
-        return ["pci", "usb", "block", "mic"]
 
 
 class FakeHelper:

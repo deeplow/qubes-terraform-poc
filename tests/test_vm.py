@@ -39,7 +39,7 @@ def test_resource_type_name_is_qubes_vm():
     p = QubesProvider()
     assert p.get_model_prefix() + QubesVMResource.get_name() == "qubes_vm"
     assert QubesVMResource in p.get_resources()
-    assert p.get_data_sources() == []
+    # data sources are wired/asserted in test_system.py
 
 
 def test_schemas_build():
