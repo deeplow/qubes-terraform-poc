@@ -15,6 +15,7 @@ from .data_sources.system import (
     QubesPropertyDataSource,
     QubesVMClassDataSource,
 )
+from .resources.qubes_prefs import QubesPrefsResource
 from .resources.vm import QubesVMResource
 
 
@@ -41,7 +42,7 @@ class QubesProvider(p.Provider):
         return
 
     def get_resources(self) -> list[Type[Resource]]:
-        return [QubesVMResource]
+        return [QubesVMResource, QubesPrefsResource]
 
     def get_data_sources(self) -> list[Type[DataSource]]:
         return [

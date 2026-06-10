@@ -322,6 +322,16 @@ class FakeApp:
             "check_updates_vm": True,
         }
         self._global_defaults = {"default_qrexec_timeout", "check_updates_vm"}
+        # Value each global takes when reset to default (admin.property.Reset).
+        self._global_default_values = {
+            "default_template": "default-template",
+            "default_netvm": "default-netvm",
+            "default_dispvm": "",
+            "clockvm": "",
+            "default_kernel": "default-kernel",
+            "default_qrexec_timeout": 60,
+            "check_updates_vm": True,
+        }
 
         self.labels = {
             "red": _FakeAppLabel(1, "0xcc0000"),
@@ -353,6 +363,18 @@ class FakeApp:
         if name in props:
             return props[name]
         raise AttributeError(name)
+
+    def __setattr__(self, name, value):
+        # Writing a global property mirrors admin.property.Set / .Reset; everything
+        # else (domains, labels, _internal, ...) is a normal attribute.
+        if name.startswith("_") or name not in getattr(self, "_global_props", {}):
+            return object.__setattr__(self, name, value)
+        if value is qubesadmin.DEFAULT:                  # admin.property.Reset
+            self._global_defaults.add(name)
+            self._global_props[name] = self._global_default_values[name]
+        else:                                            # admin.property.Set
+            self._global_defaults.discard(name)
+            self._global_props[name] = value
 
     # --- catalogs -----------------------------------------------------------
 
