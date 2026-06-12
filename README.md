@@ -119,8 +119,9 @@ removal of de-declared tags/features/services, create rollback, and the gRPC/sch
 - **`qubesadmin`** — shipped by Qubes (`qubes-core-admin-client`), present in **dom0** and available
   in management qubes. It is *not* on PyPI, so it lives in the **system** Python; the venv
   must be allowed to see system site-packages (see Install). Device assignment uses the newer
-- `qubes-desktop-linux-common` — Needed for cloning appmenus when performing a qube clone.
   `qubesadmin.device_protocol` API (Qubes **4.3+**); other features work on older qubesadmin.
+- **`qubes-desktop-linux-common`** — provides `qvm-appmenus`, needed for cloning appmenus when
+  performing a qube clone.
 - The bundled **qubes-ansible** git submodule (no Ansible runtime required — the provider only
   imports the collection's Python and supplies its own `AnsibleModule` shim). After cloning:
   `git submodule update --init`.
