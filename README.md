@@ -116,9 +116,10 @@ removal of de-declared tags/features/services, create rollback, and the gRPC/sch
 ## Requirements
 
 - **Python 3.11+**.
-- **`qubesadmin`** — shipped by Qubes (`qubes-core-admin-client`), present in **dom0** and
+- **`qubesadmin`** — shipped by Qubes (`qubes-core-admin-client`), present in **dom0** and available
   in management qubes. It is *not* on PyPI, so it lives in the **system** Python; the venv
   must be allowed to see system site-packages (see Install). Device assignment uses the newer
+- `qubes-desktop-linux-common` — Needed for cloning appmenus when performing a qube clone.
   `qubesadmin.device_protocol` API (Qubes **4.3+**); other features work on older qubesadmin.
 - The bundled **qubes-ansible** git submodule (no Ansible runtime required — the provider only
   imports the collection's Python and supplies its own `AnsibleModule` shim). After cloning:
@@ -235,6 +236,20 @@ Smoke-test the plugin handshake (should print `1|6|unix|<sock>|grpc|<cert>`):
 qubes-ansible: properties, features, services, tags, volumes, devices, notes, and clone.
 Planned next: dom0 global preferences (`default_template`/`default_dispvm`),
 `qubes_firewall`, and CI against both `terraform` and `tofu`.
+
+## Re-implementation
+
+This is just a PoC and should be implemented with a better foundation (and vetting of used components / dependencies)
+
+Lessons for a rewrite:
+  - consider doing as an [external provider](https://registry.terraform.io/providers/hashicorp/external/latest/docs/data-sources/external)
+  - re-evaluate provider framework (or use go)
+  - well scoped permissions
+  - use qubes-ansible proxy strategy
+  - don't base on top of ansible module (done here for simplicitly), but when possible use or create higher level
+    utils functions in qubes-core-admin-client
+  - Better organized Data Sources: either follow admin API or some pre-established namespace for the various tools
+
 
 ## License
 
