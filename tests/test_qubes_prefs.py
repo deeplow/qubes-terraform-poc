@@ -83,6 +83,27 @@ def test_delete_resets_managed_only(prefs_env):
     assert prefs_env._global_props["default_dispvm"] == "sd-viewer"  # unmanaged -> untouched
 
 
+def test_reset_propagates_failures(monkeypatch):
+    # A failed reset (e.g. the mgmt qube lacks admin.property.Reset policy on dom0)
+    # must NOT be swallowed: it has to surface so the destroy fails on qubes_prefs,
+    # not silently leave the global set and later fail on a qube that references it.
+    class _DeniedApp:
+        def property_is_default(self, prop):
+            return False
+        def __setattr__(self, key, value):
+            raise RuntimeError("Request refused")
+
+    class _Shim:
+        DEFAULT = qubesadmin.DEFAULT
+        @staticmethod
+        def Qubes():
+            return _DeniedApp()
+
+    monkeypatch.setattr(qubes_prefs, "qubesadmin", _Shim)
+    with pytest.raises(RuntimeError, match="Request refused"):
+        qubes_prefs.QubesPrefs().reset(["default_dispvm"])
+
+
 # --- schema / wiring --------------------------------------------------------
 
 def test_schema_is_dynamic(prefs_env):

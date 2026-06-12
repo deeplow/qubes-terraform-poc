@@ -52,13 +52,15 @@ class QubesPrefs:
                 setattr(app, prop, value)
 
     def reset(self, props) -> None:                         # admin.property.Reset (removal / destroy)
+        # Do NOT swallow failures: if a global can't be reset (e.g. the mgmt qube
+        # lacks admin.property.Reset policy on dom0), the caller must surface it so
+        # the destroy fails *here* with the real reason — otherwise the global stays
+        # set and a qube referencing it later fails to delete with a confusing
+        # "Domain is in use" error attributed to the wrong resource.
         app = self._app()
         for prop in props:
-            try:
-                if not app.property_is_default(prop):
-                    setattr(app, prop, qubesadmin.DEFAULT)
-            except Exception:  # noqa: BLE001 - best-effort reset
-                pass
+            if not app.property_is_default(prop):
+                setattr(app, prop, qubesadmin.DEFAULT)
 
     def project(self, props) -> dict:                       # declared props -> live value
         app = self._app()
