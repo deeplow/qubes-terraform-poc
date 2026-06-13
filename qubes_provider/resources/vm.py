@@ -110,10 +110,22 @@ class QubesVMResource(Resource):
                 ),
                 # --- capabilities delegated to qubes-ansible ----------------
                 schema.Attribute(
-                    "clone_src", types.String(), optional=True, requires_replace=True,
+                    "origin", types.Map(types.String()),
+                    optional=True,
                     description=(
-                        "Create this qube by cloning an existing one (its volumes "
-                        "and prefs), instead of from a template."
+                        "How this qube comes into being (creation-time identity). A flat "
+                        'string map. Keys: "type" = "clone" | "repo"; "name" = the source '
+                        "(clone: the qube to clone from; repo: the template to install). "
+                        'For "repo": optional "repo_id" (qvm-template --repoid) and '
+                        '"repo_pool" (--pool); idempotent — if a template named "name" '
+                        "already exists it is used as-is, else installed via qvm-template. "
+                        'For "repo", the resource\'s "name" must equal origin "name". '
+                        "Creation-time only: it is consumed when the qube is first created "
+                        "and is not reconstructable from a live qube, so an imported qube "
+                        "reads it back as null and the first apply sets it in place (no "
+                        "re-clone). It does not force replacement — to rebuild a qube when "
+                        "its source changes, declare a lifecycle.replace_triggered_by on the "
+                        "source resource in your config."
                     ),
                 ),
                 schema.Attribute(

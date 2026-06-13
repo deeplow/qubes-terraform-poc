@@ -81,7 +81,7 @@ doesn't hardcode (or need to track) individual properties.
 | `klass` | string, required | `AppVM`, `TemplateVM`, `StandaloneVM`, `DispVM`. Replaces on change. |
 | `label` | string, required | Label color (red, blue, …). |
 | `template` | string, optional/computed | Base template. `"*default*"` = Qubes default; a name = that template. |
-| `clone_src` | string, optional | Create this qube by **cloning** an existing one (its volumes + prefs) instead of from a template. Replaces on change. |
+| `origin` | map(string), optional | How the qube is **created** (creation-time only). `type = "clone"` → clone the qube named by `name` (its volumes + prefs); `type = "repo"` → install the TemplateVM named by `name` from a repo via `qvm-template` (idempotent: skipped if already present), with optional `repo_id` (`--repoid`) and `repo_pool` (`--pool`). For `type = "repo"` the resource's `name` must equal `origin.name`. Consumed only at first create and **not reconstructable from a live qube**: an imported qube reads it back as null and the first apply sets it in place (no re-clone). It does **not** force replacement — to rebuild a qube when its source changes, use `lifecycle.replace_triggered_by` on the source (see below). |
 | `properties` | map(string), optional/computed | **Any** qube property: `memory`, `maxmem`, `netvm`, `kernel`, `virt_mode`, `autostart`, `template_for_dispvms`, `guivm`, … Values are strings (Qubes-canonical, e.g. `"True"`); `"*default*"` = that property's current Qubes default; `""` clears a VM-valued property. |
 | `features` | map(string), optional | Qube features (`vm.features`). Config-authoritative: deleting/clearing the block removes the declared keys (system-set features untouched). |
 | `services` | set(string), optional | Qubes services to enable — sugar for the `service.<x>` feature. Config-authoritative: deleting/clearing the block disables the declared services. |
@@ -92,9 +92,31 @@ doesn't hardcode (or need to track) individual properties.
 | `shutdown_if_required` | bool, optional | If changing `template` needs the qube halted and it's running, shut it down first. Default false → error instead. |
 | `force_shutdown` | bool, optional | Force the shutdown done for a template change. |
 
-`clone_src`, `services`, `volumes`, `devices` and `notes` are all backed by
-qubes-ansible's `QubeModule`. Tags, features and services are **converged**: declaring one adds
+`origin` (clone), `services`, `volumes`, `devices` and `notes` are backed by
+qubes-ansible's `QubeModule`; an `origin` of `type = "repo"` is installed via `qvm-template` before
+the qube is configured. Tags, features and services are **converged**: declaring one adds
 it, and removing it from the config removes it from the qube (Qubes auto-tags are never touched).
+
+Because `origin` is creation-time only and never forces replacement, rebuild a cloned qube when its
+source changes by pointing a `replace_triggered_by` at the source resource:
+
+```hcl
+resource "qubes_vm" "child" {
+  name   = "child-template"
+  klass  = "TemplateVM"
+  label  = "red"
+  origin = { type = "clone", name = qubes_vm.base.name }
+
+  lifecycle {
+    replace_triggered_by = [qubes_vm.base]  # re-clone if the base is rebuilt
+  }
+}
+```
+
+> **`origin = { type = "repo" }` prerequisites.** It runs `qvm-template install --updatevm=''`, so the
+> **management qube itself downloads the template** (it must have network access) instead of proxying
+> through the global UpdateVM. It still needs Admin-API access plus the `qubes.Template*` qrexec services
+> granted; otherwise the install is denied (analogous to the dom0-only `qvm-appmenus` requirement above).
 
 Changing a running qube's `template` requires it halted; qubesd rejects it otherwise. With
 `shutdown_if_required = true` the provider shuts the qube down first (qubes-ansible's
@@ -198,8 +220,9 @@ admin.vm.CurrentState	*	work		@tag:created-by-work	target=dom0
 ```
 
 The capabilities added on top need their own verbs as you use them: `admin.vm.volume.Resize`
-(volumes), `admin.vm.device.*.Attach`/`Detach`/`List` (devices), and `admin.vm.Clone`
-(`clone_src`).
+(volumes), `admin.vm.device.*.Attach`/`Detach`/`List` (devices), `admin.vm.Clone`
+(`origin = { type = "clone" }`), and the `qubes.Template*` qrexec services
+(`origin = { type = "repo" }`).
 
 Scope as tightly as your use case allows. Otherwise, the following `include/admin-global-ro` may help:
 

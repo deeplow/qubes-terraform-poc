@@ -22,27 +22,92 @@ def make(name, klass="AppVM", label="red", template=None, **extra):
     base = {"name": name, "klass": klass, "label": label, "template": template,
             "properties": None, "features": None, "tags": None,
             "shutdown_if_required": None, "force_shutdown": None,
-            "clone_src": None, "volumes": None, "services": None,
+            "origin": None, "volumes": None, "services": None,
             "notes": None, "devices": None}
     base.update(extra)
     return base
 
 
-# --- clone ------------------------------------------------------------------
+# --- origin: clone ----------------------------------------------------------
 
-def test_create_via_clone_src(qube_env):
+def test_create_via_origin_clone(qube_env):
     c = ctx()
-    state = res().create(c, make("tf-tmpl", klass="TemplateVM", clone_src="fedora-40"))
+    state = res().create(c, make("tf-tmpl", klass="TemplateVM",
+                                 origin={"type": "clone", "name": "fedora-40"}))
     c.diagnostics.add_error.assert_not_called()
     assert "tf-tmpl" in qube_env.domains
     assert qube_env.domains["tf-tmpl"].klass == "TemplateVM"
-    assert state["clone_src"] == "fedora-40"
+    assert state["origin"] == {"type": "clone", "name": "fedora-40"}
 
 
 def test_clone_missing_source_errors(qube_env):
     c = ctx()
-    assert res().create(c, make("tf-x", clone_src="does-not-exist")) is None
+    assert res().create(
+        c, make("tf-x", origin={"type": "clone", "name": "does-not-exist"})) is None
     c.diagnostics.add_error.assert_called_once()
+
+
+# --- origin: repo (qvm-template install) ------------------------------------
+
+def test_create_via_origin_repo_installs_when_absent(qube_env, monkeypatch):
+    from qubes_provider import qubes_adapter as adapter
+    from tests.fakes import FakeVM
+
+    calls = []
+
+    def fake_main(argv, app=None):
+        calls.append(argv)
+        app.domains.add(FakeVM("debian-12-minimal", "TemplateVM", "black"))
+        return 0
+
+    monkeypatch.setattr(adapter.qvm_template, "main", fake_main)
+    c = ctx()
+    state = res().create(c, make("debian-12-minimal", klass="TemplateVM", label="black",
+                                 origin={"type": "repo", "name": "debian-12-minimal",
+                                         "repo_id": "qubes-templates-itl"}))
+    c.diagnostics.add_error.assert_not_called()
+    assert calls == [["install", "--quiet", "--updatevm", "", "--repoid",
+                      "qubes-templates-itl", "debian-12-minimal"]]
+    assert "debian-12-minimal" in qube_env.domains
+    assert state["origin"]["type"] == "repo"
+
+
+def test_create_via_origin_repo_idempotent_when_present(qube_env, monkeypatch):
+    from qubes_provider import qubes_adapter as adapter
+
+    called = []
+    monkeypatch.setattr(adapter.qvm_template, "main",
+                        lambda argv, app=None: called.append(argv) or 0)
+    # fedora-40 already exists in the fake app -> no repo fetch.
+    res().create(ctx(), make("fedora-40", klass="TemplateVM", label="black",
+                             origin={"type": "repo", "name": "fedora-40"}))
+    assert called == []
+
+
+def test_origin_does_not_force_replacement():
+    # origin is creation-time only and not reconstructable from a live qube, so it
+    # must NOT be requires_replace -- otherwise an imported qube (origin reads back
+    # null) is force-recreated against its config. Re-clone-on-source-change is
+    # expressed in config via lifecycle.replace_triggered_by instead.
+    origin = {a.name: a for a in QubesVMResource.get_schema().attributes}["origin"]
+    assert not origin.requires_replace
+
+
+def test_update_with_origin_clone_does_not_reclone(qube_env):
+    # An existing qube carrying an origin clone spec (e.g. just after import) is
+    # updated in place: the clone runs only when the qube is absent, so update must
+    # neither error nor re-clone over the live qube.
+    res().create(ctx(), make("tf-up", klass="TemplateVM",
+                             origin={"type": "clone", "name": "fedora-40"}))
+    before = qube_env.domains["tf-up"]
+    c = ctx()
+    state = res().update(c, make("tf-up", klass="TemplateVM",
+                                 origin={"type": "clone", "name": "fedora-40"}),
+                         make("tf-up", klass="TemplateVM", label="green",
+                              origin={"type": "clone", "name": "fedora-40"}))
+    c.diagnostics.add_error.assert_not_called()
+    assert qube_env.domains["tf-up"] is before          # not re-created
+    assert state["origin"] == {"type": "clone", "name": "fedora-40"}
 
 
 # --- volumes ----------------------------------------------------------------

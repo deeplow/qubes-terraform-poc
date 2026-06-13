@@ -31,6 +31,7 @@ from .errors import QubesProviderError
 
 try:
     import qubesadmin  # noqa: PLC0415
+    import qubesadmin.tools.qvm_template as qvm_template  # noqa: PLC0415
 except ImportError as exc:  # pragma: no cover
     raise QubesProviderError(
         "qubesadmin is not available. Run this provider in dom0 or a Qubes "
@@ -209,15 +210,21 @@ class QubesVmAdapter(TerraformAnsibleAdapter):
     # Ansible params whose name differs from the Terraform attribute feeding them.
     _PARAM_RENAMES = {"force_shutdown": "force"}
     # Terraform attributes the generic conversion skips (handled explicitly below).
-    _SKIP_ATTRS = {"label"}
+    _SKIP_ATTRS = {"label", "origin"}
 
     # --- Target: what the resource / data source call -----------------------
 
     def create_or_update(self, desired: dict, prior: dict | None = None) -> None:
-        """Make the qube match ``desired``: create/clone + enforce properties,
+        """Make the qube match ``desired``: create/clone/install + enforce properties,
         volumes, devices, features, tags and notes via ``QubeModule``; then, when
         ``prior`` is given (update), prune the tags/features/services dropped since
-        ``prior`` (qubes-ansible only adds/sets — Terraform converges removals)."""
+        ``prior`` (qubes-ansible only adds/sets — Terraform converges removals).
+
+        ``origin.type == "repo"`` installs the TemplateVM from a repo via qvm-template
+        first (idempotent); ``QubeModule`` then configures the now-existing qube."""
+        self._validate_origin(desired)
+        if self.as_dict(desired.get("origin")).get("type") == "repo":
+            self._ensure_installed(desired)
         self._run_module(self.desired_to_qube_params(desired))
         if prior is not None:
             self._prune_undeclared(desired, prior)
@@ -232,10 +239,61 @@ class QubesVmAdapter(TerraformAnsibleAdapter):
         except Exception:  # noqa: BLE001
             pass
 
+    # --- origin (creation mode) ---------------------------------------------
+
+    def _validate_origin(self, desired: dict) -> None:
+        """Validate the ``origin`` map; raise :class:`QubesProviderError` on a bad spec.
+        An unset/unknown origin is a no-op (validated at apply, when concrete)."""
+        origin = self.as_dict(desired.get("origin"))
+        if not origin:
+            return
+        otype = origin.get("type")
+        if otype not in ("clone", "repo"):
+            raise QubesProviderError(
+                f"origin.type must be 'clone' or 'repo', got {otype!r}"
+            )
+        if not origin.get("name"):
+            raise QubesProviderError("origin.name is required")
+        repo_keys = sorted(k for k in origin if k.startswith("repo_"))
+        if otype == "clone" and repo_keys:
+            raise QubesProviderError(
+                f"origin repo_* keys are only valid with type='repo': {repo_keys}"
+            )
+        if otype == "repo" and desired.get("name") != origin.get("name"):
+            raise QubesProviderError(
+                "for origin type='repo' the qube name must equal origin.name "
+                f"({desired.get('name')!r} != {origin.get('name')!r}): qvm-template "
+                "names the installed TemplateVM after the template"
+            )
+
+    def _ensure_installed(self, desired: dict) -> None:
+        """Idempotently install a TemplateVM from a repo via qvm-template (mirrors salt
+        ``qvm.template_installed``): a no-op when a domain of that name already exists,
+        else ``qvm-template install --quiet [--repoid=..] [--pool=..] <name>``."""
+        origin = self.as_dict(desired.get("origin"))
+        name = origin["name"]
+        app = qubesadmin.Qubes()
+        if name in app.domains:
+            return
+        # --updatevm '' downloads the template from *this* VM rather than proxying
+        # through the global UpdateVM: the provider runs in a management qube that
+        # has its own network access, so it fetches the template itself.
+        argv = ["install", "--quiet", "--updatevm", ""]
+        if origin.get("repo_id"):
+            argv += ["--repoid", origin["repo_id"]]
+        if origin.get("repo_pool"):
+            argv += ["--pool", origin["repo_pool"]]
+        argv.append(name)
+        rc = qvm_template.main(argv, app=app)
+        if rc:
+            raise QubesProviderError(
+                f"qvm-template install failed (rc={rc}) for template {name!r}"
+            )
+
     def read_vm(self, name: str, desired: dict) -> dict | None:
         """Full ``qubes_vm`` resource state, projected onto the declared subset,
         or ``None`` if the qube does not exist. ``volumes``/``services``/``notes``
-        are read-projected; ``clone_src``/``devices`` and the behavioral flags are
+        are read-projected; ``origin``/``devices`` and the behavioral flags are
         echoed from ``desired`` (config-only, not reconstructable from a qube's facts)."""
         facts = self._fetch_facts(name)
         if facts is None:
@@ -251,7 +309,7 @@ class QubesVmAdapter(TerraformAnsibleAdapter):
         # representation) — echoed from desired
         state["shutdown_if_required"] = desired.get("shutdown_if_required")
         state["force_shutdown"] = desired.get("force_shutdown")
-        state["clone_src"] = desired.get("clone_src")
+        state["origin"] = desired.get("origin")
 
         return state
 
@@ -286,6 +344,13 @@ class QubesVmAdapter(TerraformAnsibleAdapter):
         # neither passes it to add_new_vm nor Resets the (un-resettable) AppVM template.
         if params["template"] == self.DEFAULT_TOKEN:
             params["template"] = None
+
+        # origin: a "clone" sources the qube by cloning origin["name"]; qubes-ansible
+        # still receives exactly its "clone_src" param. (A "repo" origin is installed
+        # via qvm-template in create_or_update, so it adds no QubeModule param.)
+        origin = self.as_dict(desired.get("origin"))
+        if origin.get("type") == "clone":
+            params["clone_src"] = origin.get("name")
 
         return params
 
