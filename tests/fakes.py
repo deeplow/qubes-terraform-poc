@@ -19,6 +19,26 @@ import qubesadmin
 import qubesadmin.exc
 
 
+class FakePolicyClient:
+    """In-memory stand-in for qrexec's ``PolicyClient`` (the slice QubesPolicy uses):
+    a name -> file-content store. ``policy_get`` returns ``(content, token)``."""
+
+    def __init__(self, files=None):
+        self.files = files if files is not None else {}
+
+    def policy_list(self):
+        return sorted(self.files)
+
+    def policy_get(self, name):
+        return self.files[name], "sha256:fake"
+
+    def policy_replace(self, name, content, token="any"):
+        self.files[name] = content
+
+    def policy_remove(self, name, token="any"):
+        self.files.pop(name, None)
+
+
 class FakeLabel:
     def __init__(self, name):
         self.name = name
