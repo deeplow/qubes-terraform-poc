@@ -269,7 +269,7 @@ class QubesVmAdapter(TerraformAnsibleAdapter):
     def _ensure_installed(self, desired: dict) -> None:
         """Idempotently install a TemplateVM from a repo via qvm-template (mirrors salt
         ``qvm.template_installed``): a no-op when a domain of that name already exists,
-        else ``qvm-template install --quiet [--repoid=..] [--pool=..] <name>``."""
+        else ``qvm-template --quiet --updatevm '' [--repoid=..] install [--pool=..] <name>``."""
         origin = self.as_dict(desired.get("origin"))
         name = origin["name"]
         app = qubesadmin.Qubes()
@@ -278,13 +278,24 @@ class QubesVmAdapter(TerraformAnsibleAdapter):
         # --updatevm '' downloads the template from *this* VM rather than proxying
         # through the global UpdateVM: the provider runs in a management qube that
         # has its own network access, so it fetches the template itself.
-        argv = ["install", "--quiet", "--updatevm", ""]
+        #
+        # The global options (--quiet/--updatevm/--repoid) MUST precede the `install`
+        # subcommand; only --pool is an `install`-subcommand option. Getting this order
+        # wrong makes argparse exit(2) -> SystemExit, which is a BaseException and would
+        # escape the resource's `except Exception`, hanging the apply.
+        argv = ["--quiet", "--updatevm", ""]
         if origin.get("repo_id"):
             argv += ["--repoid", origin["repo_id"]]
+        argv.append("install")
         if origin.get("repo_pool"):
             argv += ["--pool", origin["repo_pool"]]
         argv.append(name)
-        rc = qvm_template.main(argv, app=app)
+        try:
+            rc = qvm_template.main(argv, app=app)
+        except SystemExit as exc:  # argparse rejected argv; don't let it escape as BaseException
+            raise QubesProviderError(
+                f"qvm-template rejected arguments {argv!r} (exit {exc.code})"
+            ) from exc
         if rc:
             raise QubesProviderError(
                 f"qvm-template install failed (rc={rc}) for template {name!r}"

@@ -50,12 +50,21 @@ def test_clone_missing_source_errors(qube_env):
 # --- origin: repo (qvm-template install) ------------------------------------
 
 def test_create_via_origin_repo_installs_when_absent(qube_env, monkeypatch):
+    import qubesadmin.tools.qvm_template as qt
     from qubes_provider import qubes_adapter as adapter
     from tests.fakes import FakeVM
 
     calls = []
 
     def fake_main(argv, app=None):
+        # Validate argv against the REAL parser (qvm_template.main's two-pass logic)
+        # so a malformed/mis-ordered argv can never slip through the stub again.
+        p, rest = qt.parser.parse_known_args(argv)
+        p = qt.parser.parse_args(rest, p)
+        assert p.command == "install"
+        assert p.templates == ["debian-12-minimal"]
+        assert p.updatevm == ""
+        assert p.repos == [("repoid", "qubes-templates-itl")]
         calls.append(argv)
         app.domains.add(FakeVM("debian-12-minimal", "TemplateVM", "black"))
         return 0
@@ -66,10 +75,55 @@ def test_create_via_origin_repo_installs_when_absent(qube_env, monkeypatch):
                                  origin={"type": "repo", "name": "debian-12-minimal",
                                          "repo_id": "qubes-templates-itl"}))
     c.diagnostics.add_error.assert_not_called()
-    assert calls == [["install", "--quiet", "--updatevm", "", "--repoid",
-                      "qubes-templates-itl", "debian-12-minimal"]]
+    # Global options (--quiet/--updatevm/--repoid) precede the `install` subcommand.
+    assert calls == [["--quiet", "--updatevm", "", "--repoid",
+                      "qubes-templates-itl", "install", "debian-12-minimal"]]
     assert "debian-12-minimal" in qube_env.domains
     assert state["origin"]["type"] == "repo"
+
+
+def test_create_via_origin_repo_pool_argv_parses(qube_env, monkeypatch):
+    # repo_pool -> --pool, which IS an `install`-subcommand option (stays after `install`).
+    import qubesadmin.tools.qvm_template as qt
+    from qubes_provider import qubes_adapter as adapter
+    from tests.fakes import FakeVM
+
+    calls = []
+
+    def fake_main(argv, app=None):
+        p, rest = qt.parser.parse_known_args(argv)
+        p = qt.parser.parse_args(rest, p)
+        assert p.command == "install"
+        assert p.templates == ["debian-12-minimal"]
+        assert p.updatevm == ""
+        assert p.pool == "vm-pool"
+        calls.append(argv)
+        app.domains.add(FakeVM("debian-12-minimal", "TemplateVM", "black"))
+        return 0
+
+    monkeypatch.setattr(adapter.qvm_template, "main", fake_main)
+    c = ctx()
+    res().create(c, make("debian-12-minimal", klass="TemplateVM", label="black",
+                         origin={"type": "repo", "name": "debian-12-minimal",
+                                 "repo_pool": "vm-pool"}))
+    c.diagnostics.add_error.assert_not_called()
+    assert calls == [["--quiet", "--updatevm", "", "install", "--pool",
+                      "vm-pool", "debian-12-minimal"]]
+
+
+def test_create_via_origin_repo_argparse_error_fails_resource(qube_env, monkeypatch):
+    # A SystemExit from qvm-template's argparse must surface as a resource error,
+    # not escape as BaseException (which would hang the apply).
+    from qubes_provider import qubes_adapter as adapter
+
+    def fake_main(argv, app=None):
+        raise SystemExit(2)
+
+    monkeypatch.setattr(adapter.qvm_template, "main", fake_main)
+    c = ctx()
+    assert res().create(c, make("debian-12-minimal", klass="TemplateVM", label="black",
+                                origin={"type": "repo", "name": "debian-12-minimal"})) is None
+    c.diagnostics.add_error.assert_called_once()
 
 
 def test_create_via_origin_repo_idempotent_when_present(qube_env, monkeypatch):
