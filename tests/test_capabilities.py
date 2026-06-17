@@ -5,7 +5,7 @@ the real QubeModule via the ``qube_env`` fixture."""
 
 from unittest.mock import MagicMock
 
-from qubes_provider.resources.vm import QubesVMResource
+from qubes_provider.resources.qube import QubesVMResource
 
 
 def ctx():
@@ -51,7 +51,7 @@ def test_clone_missing_source_errors(qube_env):
 
 def test_create_via_origin_repo_installs_when_absent(qube_env, monkeypatch):
     import qubesadmin.tools.qvm_template as qt
-    from qubes_provider import qubes_adapter as adapter
+    from qubes_provider.utils import qubes_adapter as adapter
     from tests.fakes import FakeVM
 
     calls = []
@@ -85,7 +85,7 @@ def test_create_via_origin_repo_installs_when_absent(qube_env, monkeypatch):
 def test_create_via_origin_repo_pool_argv_parses(qube_env, monkeypatch):
     # repo_pool -> --pool, which IS an `install`-subcommand option (stays after `install`).
     import qubesadmin.tools.qvm_template as qt
-    from qubes_provider import qubes_adapter as adapter
+    from qubes_provider.utils import qubes_adapter as adapter
     from tests.fakes import FakeVM
 
     calls = []
@@ -114,7 +114,7 @@ def test_create_via_origin_repo_pool_argv_parses(qube_env, monkeypatch):
 def test_create_via_origin_repo_argparse_error_fails_resource(qube_env, monkeypatch):
     # A SystemExit from qvm-template's argparse must surface as a resource error,
     # not escape as BaseException (which would hang the apply).
-    from qubes_provider import qubes_adapter as adapter
+    from qubes_provider.utils import qubes_adapter as adapter
 
     def fake_main(argv, app=None):
         raise SystemExit(2)
@@ -127,7 +127,7 @@ def test_create_via_origin_repo_argparse_error_fails_resource(qube_env, monkeypa
 
 
 def test_create_via_origin_repo_idempotent_when_present(qube_env, monkeypatch):
-    from qubes_provider import qubes_adapter as adapter
+    from qubes_provider.utils import qubes_adapter as adapter
 
     called = []
     monkeypatch.setattr(adapter.qvm_template, "main",

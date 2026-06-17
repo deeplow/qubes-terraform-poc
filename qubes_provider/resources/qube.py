@@ -20,7 +20,7 @@ from tf.iface import (
 )
 from tf.provider import Resource
 
-from ..qubes_adapter import QubesVmAdapter
+from ..utils.qubes_adapter import QubesVmAdapter
 
 
 class QubesVMResource(Resource):

@@ -496,15 +496,11 @@ def install_qube_fakes(monkeypatch, app):
     Bootstraps the collection, then patches ``qube_module`` globals (QubesHelper,
     the device_protocol-nulled ``qubesadmin``, DeviceAssignment/AssignmentMode)
     and ``qube_facts``' ``qubesadmin.Qubes`` to return ``app``."""
-    from qubes_provider import qubes_adapter as adapter
+    from qubes_provider.utils import qubes_adapter as adapter
 
     adapter._bootstrap()
-    qube_module = importlib.import_module(
-        "ansible_collections.qubesos.core.plugins.module_utils.qubes_module_qube"
-    )
-    qube_facts = importlib.import_module(
-        "ansible_collections.qubesos.core.plugins.modules.qube_facts"
-    )
+    qube_module = importlib.import_module("qubes_module_qube")
+    qube_facts = importlib.import_module("qube_facts")
 
     FakeHelper._app = app
     monkeypatch.setattr(qube_module, "QubesHelper", FakeHelper)

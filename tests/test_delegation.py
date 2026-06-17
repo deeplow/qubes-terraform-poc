@@ -3,7 +3,7 @@
 against the in-memory fakes, through the adapter's drivers. Proves the harness +
 wiring (the bundled collection actually runs and reads back)."""
 
-from qubes_provider.qubes_adapter import QubesVmAdapter
+from qubes_provider.utils.qubes_adapter import QubesVmAdapter
 
 
 def _adapter():

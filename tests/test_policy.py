@@ -11,10 +11,10 @@ import pytest
 
 from tf.utils import Diagnostics
 
-from qubes_provider import policy as policy_core
-from qubes_provider.policy import QubesPolicy
+from qubes_provider.utils import policy as policy_core
+from qubes_provider.utils.policy import QubesPolicy
 from qubes_provider.provider import QubesProvider
-from qubes_provider.resources.qubes_policy import QubesPolicyResource
+from qubes_provider.resources.policy import QubesPolicyResource
 from tests.fakes import FakePolicyClient
 
 

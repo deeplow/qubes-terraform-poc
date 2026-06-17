@@ -9,10 +9,10 @@ declarative tag/feature removal, template-shutdown, create rollback, import.
 
 from unittest.mock import MagicMock
 
-from qubes_provider.errors import QubesProviderError
+from qubes_provider.utils.errors import QubesProviderError
 from qubes_provider.provider import QubesProvider
-from qubes_provider.qubes_adapter import QubesVmAdapter
-from qubes_provider.resources.vm import QubesVMResource
+from qubes_provider.utils.qubes_adapter import QubesVmAdapter
+from qubes_provider.resources.qube import QubesVMResource
 
 
 def ctx():

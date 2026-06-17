@@ -8,16 +8,16 @@ from tf import schema
 from tf.provider import DataSource, Resource
 from tf.utils import Diagnostics
 
-from .data_sources.system import (
+from ..data_sources.system import (
     QubesDeviceClassDataSource,
     QubesLabelDataSource,
     QubesPoolDataSource,
     QubesPropertyDataSource,
     QubesVMClassDataSource,
 )
-from .resources.qubes_policy import QubesPolicyResource
-from .resources.qubes_prefs import QubesPrefsResource
-from .resources.vm import QubesVMResource
+from ..resources.policy import QubesPolicyResource
+from ..resources.prefs import QubesPrefsResource
+from ..resources.qube import QubesVMResource
 
 
 class QubesProvider(p.Provider):

@@ -30,8 +30,8 @@ from tf.provider import Resource
 from tf.types import Unknown
 from tf.utils import Diagnostics
 
-from .. import policy as policy_core
-from ..policy import QubesPolicy
+from ..utils import policy as policy_core
+from ..utils.policy import QubesPolicy
 
 
 def _is_set(value) -> bool:

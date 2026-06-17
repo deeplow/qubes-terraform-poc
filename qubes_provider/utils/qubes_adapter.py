@@ -15,8 +15,9 @@ module is the single seam where that happens:
   small Qubes-VM backend (``create_or_update`` / ``delete`` / ``read_vm``) in
   Terraform's vocabulary. The resource talks only to it.
 
-``_bootstrap`` puts the (PEP420-namespace) collection on ``sys.path``, stubs
-``ansible.module_utils.basic.AnsibleModule`` so it imports, and installs the
+``_bootstrap`` puts the vendored qubes-ansible modules (``qubes_ansible/``, a flat
+subset of the upstream collection) on ``sys.path``, stubs
+``ansible.module_utils.basic.AnsibleModule`` so they import, and installs the
 qubesadmin 4.2↔4.3 compat shims.
 """
 
@@ -38,8 +39,9 @@ except ImportError as exc:  # pragma: no cover
         "management qube that has the qubes-core-admin-client package installed."
     ) from exc
 
-# Root that contains the ``ansible_collections`` namespace package.
-_SUBMODULE_ROOT = os.path.join(os.path.dirname(__file__), "helpers", "qubes_ansible")
+# Directory holding the vendored qubes-ansible modules, placed on sys.path so they
+# import as top-level ``qube_facts`` / ``qubes_module_qube`` / ``qubes_helper``.
+_SUBMODULE_ROOT = os.path.join(os.path.dirname(__file__), "qubes_ansible")
 _BOOTSTRAPPED = False
 
 
@@ -335,7 +337,7 @@ class QubesVmAdapter(TerraformAnsibleAdapter):
         deltas remain here: pin ``state="present"`` (the one required param), fold
         ``label`` into ``properties`` (qubes-ansible has no ``label`` param — it is an
         ordinary qube property), and resolve the ``"*default*"`` template sentinel."""
-        from .resources.vm import QubesVMResource  # deferred: avoid an import cycle
+        from ..resources.qube import QubesVMResource  # deferred: avoid an import cycle
 
         types_by_name = {a.name: a.type for a in QubesVMResource.get_schema().attributes}
         params = self.to_params(
@@ -484,9 +486,8 @@ class QubesVmAdapter(TerraformAnsibleAdapter):
     def _run_module(self, params: dict) -> dict:
         """Run qubes-ansible's ``QubeModule`` (create/clone + enforce)."""
         def runner(module):
-            from ansible_collections.qubesos.core.plugins.module_utils.qubes_module_qube import (  # noqa: E501, PLC0415
-                QubeModule,
-            )
+            from qubes_module_qube import QubeModule  # noqa: PLC0415 (vendored, on sys.path)
+
             QubeModule(module).run()
 
         return self._run(runner, params)
@@ -494,9 +495,8 @@ class QubesVmAdapter(TerraformAnsibleAdapter):
     def _fetch_facts(self, name: str):
         """Read a qube's facts via qubes-ansible's ``qube_facts``; ``None`` if absent."""
         def runner(module):
-            from ansible_collections.qubesos.core.plugins.modules import (  # noqa: PLC0415
-                qube_facts,
-            )
+            import qube_facts  # noqa: PLC0415 (vendored, on sys.path)
+
             qube_facts.core(module)
 
         try:

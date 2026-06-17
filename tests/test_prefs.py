@@ -10,8 +10,8 @@ import pytest
 import qubesadmin
 
 from qubes_provider.provider import QubesProvider
-from qubes_provider.resources import qubes_prefs
-from qubes_provider.resources.qubes_prefs import QubesPrefsResource
+from qubes_provider.resources import prefs
+from qubes_provider.resources.prefs import QubesPrefsResource
 
 
 def ctx():
@@ -32,7 +32,7 @@ def prefs_env(monkeypatch, fake_app):
         def Qubes():
             return fake_app
 
-    monkeypatch.setattr(qubes_prefs, "qubesadmin", _QubesShim)
+    monkeypatch.setattr(prefs, "qubesadmin", _QubesShim)
     return fake_app
 
 
@@ -99,9 +99,9 @@ def test_reset_propagates_failures(monkeypatch):
         def Qubes():
             return _DeniedApp()
 
-    monkeypatch.setattr(qubes_prefs, "qubesadmin", _Shim)
+    monkeypatch.setattr(prefs, "qubesadmin", _Shim)
     with pytest.raises(RuntimeError, match="Request refused"):
-        qubes_prefs.QubesPrefs().reset(["default_dispvm"])
+        prefs.QubesPrefs().reset(["default_dispvm"])
 
 
 # --- schema / wiring --------------------------------------------------------

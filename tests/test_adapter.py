@@ -9,8 +9,8 @@ import pytest
 
 from tf.types import Unknown
 
-from qubes_provider.errors import QubesProviderError
-from qubes_provider.qubes_adapter import (
+from qubes_provider.utils.errors import QubesProviderError
+from qubes_provider.utils.qubes_adapter import (
     AnsibleModuleShim,
     QubesVmAdapter,
     TerraformAnsibleAdapter,
@@ -208,18 +208,14 @@ def test_validate_origin_repo_requires_name_match():
             {"name": "x", "origin": {"type": "repo", "name": "debian-12-minimal"}})
 
 
-# --- bootstrap makes the bundled collection importable ----------------------
+# --- bootstrap makes the vendored modules importable ------------------------
 
 def test_bootstrap_imports_qube_module_and_facts():
-    from qubes_provider import qubes_adapter
+    from qubes_provider.utils import qubes_adapter
     qubes_adapter._bootstrap()
     import importlib
-    qm = importlib.import_module(
-        "ansible_collections.qubesos.core.plugins.module_utils.qubes_module_qube"
-    )
-    qf = importlib.import_module(
-        "ansible_collections.qubesos.core.plugins.modules.qube_facts"
-    )
+    qm = importlib.import_module("qubes_module_qube")
+    qf = importlib.import_module("qube_facts")
     assert hasattr(qm, "QubeModule")
     assert hasattr(qf, "core")
     # The qube modules must import with qubesadmin intact (not None) — on 4.2 this
@@ -230,7 +226,7 @@ def test_bootstrap_imports_qube_module_and_facts():
 def test_compat_shim_fills_4_2_gaps():
     # After bootstrap, the 4.3 APIs qubes-ansible needs must be present (real on 4.3,
     # shimmed on 4.2). qubesadmin is a system package; skip if it isn't installed.
-    from qubes_provider import qubes_adapter
+    from qubes_provider.utils import qubes_adapter
     qubes_adapter._bootstrap()
     import importlib
     try:
