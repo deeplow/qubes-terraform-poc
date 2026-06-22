@@ -1,0 +1,7 @@
+vm:
+  rpm:
+    build:
+    - rpm_spec/qubes-terraform.spec
+  deb:
+    build:
+    - debian

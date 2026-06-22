@@ -1,0 +1,15 @@
+Source: qubes-terraform
+Section: admin
+Priority: optional
+Maintainer: deeplow <deeplower@protonmail.com>
+Build-Depends: debhelper (>= 13), dh-python, pybuild-plugin-pyproject, python3-all, python3-setuptools
+Standards-Version: 4.6.2
+Homepage: https://github.com/deeplow/qubes-terraform
+
+Package: qubes-terraform
+Architecture: all
+Depends: ${misc:Depends}, ${python3:Depends}, python3-tf, python3-qubesadmin
+Description: Terraform/OpenTofu provider for Qubes OS
+ A Terraform/OpenTofu provider for Qubes OS, written in Python and bound to the
+ Qubes Python Admin API (qubesadmin). Manage qubes, preferences and qrexec
+ policy declaratively. Runs in dom0 or a management qube.

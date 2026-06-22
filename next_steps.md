@@ -10,12 +10,17 @@ Planned next:
   - [ ] qvm-template important things:
       - [ ] understand how qubes_vm.origin with requires_replace impacts existing systems or previously modified templates
       - [ ] build in mechanism
-      - [ ] propose changes to qvm-template to allow qubes.TemplateSearch be performed directly on management qube
-         - or simply allowing @default, for example (currently it just errors before even making an admin API call)
+      - [ ] installing template with another name (even if the original one exists). Example: downloads debian-12-xfce and saves it as deb-12-sd
   - detect and apply ansible when source changes
   - [ ] CI against both `terraform` and `tofu`.
   - [ ] qvm-template install
   - [ ] improve terraform-ansible integration
     - better way to designate that a qube can do ansible configuration. Maybe dedicated datasource?
   - [ ] packaging
+  - [ ] importing existing qubes (generic qubes provider) — ignore the defaults
   - [ ] clean up README
+
+Future ideas:
+- RPC policies defined in the resources rather than as just a policy file
+- Threat modeling goes hand in hand with system architecture (see: threatcl)
+- Basis for self-service infrastructure (blueprints for user's own configurations)

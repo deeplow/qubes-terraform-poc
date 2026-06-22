@@ -1,0 +1,44 @@
+%global debug_package %{nil}
+%global modname qubes_provider
+
+Name:           qubes-terraform
+Version:        @VERSION@
+Release:        @REL@%{?dist}
+Summary:        Terraform/OpenTofu provider for Qubes OS
+License:        GPL-3.0-or-later
+URL:            https://github.com/deeplow/qubes-terraform
+Source0:        %{name}-%{version}.tar.gz
+BuildArch:      noarch
+
+# Build tooling only; runtime deps (tf, qubesadmin) are not in the build chroot
+# and are declared as Requires below (Debian model).
+BuildRequires:  python%{python3_pkgversion}-devel
+BuildRequires:  pyproject-rpm-macros
+BuildRequires:  python%{python3_pkgversion}-setuptools
+BuildRequires:  python%{python3_pkgversion}-wheel
+BuildRequires:  python%{python3_pkgversion}-pip
+
+Requires:       python%{python3_pkgversion}-tf >= 1.2.0
+Requires:       python%{python3_pkgversion}-qubesadmin
+
+%description
+Terraform/OpenTofu provider for Qubes OS, bound to the Qubes Python Admin API
+(qubesadmin). Manage qubes, preferences and qrexec policy declaratively.
+
+%prep
+%autosetup -p1 -n %{name}-%{version}
+
+%build
+%pyproject_wheel
+
+%install
+%pyproject_install
+%pyproject_save_files %{modname}
+
+%files -f %{pyproject_files}
+%license LICENSE
+%doc README.md
+%{_bindir}/terraform-provider-qubes
+
+%changelog
+@CHANGELOG@
