@@ -12,7 +12,7 @@ Homepage: https://github.com/deeplow/qubes-terraform
 
 Package: qubes-terraform
 Architecture: all
-Depends: ${misc:Depends}, ${python3:Depends}, python3-tf, python3-qubesadmin
+Depends: ${misc:Depends}, ${python3:Depends}, tofu, python3-tf, python3-qubesadmin
 Description: Terraform/OpenTofu provider for Qubes OS
  A Terraform/OpenTofu provider for Qubes OS, written in Python and bound to the
  Qubes Python Admin API (qubesadmin). Manage qubes, preferences and qrexec
