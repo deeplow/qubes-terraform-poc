@@ -2,7 +2,11 @@ Source: qubes-terraform
 Section: admin
 Priority: optional
 Maintainer: deeplow <deeplower@protonmail.com>
-Build-Depends: debhelper (>= 13), dh-python, pybuild-plugin-pyproject, python3-all, python3-setuptools
+Build-Depends: debhelper (>= 13),
+ dh-python,
+ pybuild-plugin-pyproject,
+ python3-all,
+ python3-setuptools
 Standards-Version: 4.6.2
 Homepage: https://github.com/deeplow/qubes-terraform
 

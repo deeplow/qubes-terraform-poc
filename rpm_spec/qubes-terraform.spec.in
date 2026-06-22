@@ -35,10 +35,21 @@ Terraform/OpenTofu provider for Qubes OS, bound to the Qubes Python Admin API
 %pyproject_install
 %pyproject_save_files %{modname}
 
+# Expose the provider as an implicit OpenTofu/Terraform local filesystem mirror
+# (unpacked layout) so `tofu init` discovers it offline with no CLI config. The
+# symlinks track the entry point installed by %%pyproject_install. Both default
+# registry hosts are covered (tofu -> registry.opentofu.org, terraform -> .io).
+for host in registry.opentofu.org registry.terraform.io; do
+    install -d %{buildroot}%{_datadir}/opentofu/plugins/$host/deeplow/qubes/%{version}/linux_amd64
+    ln -s %{_bindir}/terraform-provider-qubes \
+        %{buildroot}%{_datadir}/opentofu/plugins/$host/deeplow/qubes/%{version}/linux_amd64/terraform-provider-qubes_v%{version}
+done
+
 %files -f %{pyproject_files}
 %license LICENSE
 %doc README.md
 %{_bindir}/terraform-provider-qubes
+%{_datadir}/opentofu/plugins/
 
 %changelog
 @CHANGELOG@

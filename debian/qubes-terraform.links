@@ -1,0 +1,2 @@
+usr/bin/terraform-provider-qubes usr/share/opentofu/plugins/registry.opentofu.org/deeplow/qubes/0.1.0/linux_amd64/terraform-provider-qubes_v0.1.0
+usr/bin/terraform-provider-qubes usr/share/opentofu/plugins/registry.terraform.io/deeplow/qubes/0.1.0/linux_amd64/terraform-provider-qubes_v0.1.0
