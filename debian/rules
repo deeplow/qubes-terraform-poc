@@ -9,7 +9,7 @@ override_dh_auto_build:
 override_dh_auto_test:
 override_dh_auto_install:
 
-# Build the venv fully offline from the staged wheels (wheels/ comes from the
+# Build the venv fully offline from the staged wheels (vendor/ comes from the
 # create-archive orig; see .qubesbuilder deb source command). --use-system-packages
 # keeps system python3-qubesadmin importable while the bundled (newer)
 # protobuf/grpcio win via the venv's site-packages precedence. --no-build-isolation
@@ -20,5 +20,5 @@ override_dh_virtualenv:
 	    --python /usr/bin/python3 \
 	    --use-system-packages \
 	    --extra-pip-arg=--no-index \
-	    --extra-pip-arg=--find-links=$(CURDIR)/wheels \
+	    --extra-pip-arg=--find-links=$(CURDIR)/vendor \
 	    --extra-pip-arg=--no-build-isolation
