@@ -6,3 +6,8 @@ __pycache__/
 .terraform/
 .terraform.lock.hcl
 terraform.tfstate*
+
+# Vendored-wheel build scratch. The wheels themselves are staged into wheels/
+# by the deb build (and fetched as distfiles); only wheels/*.whl.sha256 is tracked
+# and *.whl are deliberately NOT ignored so create-archive keeps them in the orig.
+/_wheelhouse/

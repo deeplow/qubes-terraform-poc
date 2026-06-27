@@ -1,6 +1,24 @@
 #!/usr/bin/make -f
 
-export PYBUILD_DISABLE=test
-
 %:
-	dh $@ --with python3 --buildsystem=pybuild
+	dh $@ --with python-virtualenv
+
+# dh_virtualenv builds the self-contained venv; suppress the default (pybuild)
+# buildsystem steps so they don't also try to install into dist-packages.
+override_dh_auto_build:
+override_dh_auto_test:
+override_dh_auto_install:
+
+# Build the venv fully offline from the staged wheels (wheels/ comes from the
+# create-archive orig; see .qubesbuilder deb source command). --use-system-packages
+# keeps system python3-qubesadmin importable while the bundled (newer)
+# protobuf/grpcio win via the venv's site-packages precedence. --no-build-isolation
+# builds our pure-python project with the build-dep setuptools (no network).
+override_dh_virtualenv:
+	dh_virtualenv \
+	    --builtin-venv \
+	    --python /usr/bin/python3 \
+	    --use-system-packages \
+	    --extra-pip-arg=--no-index \
+	    --extra-pip-arg=--find-links=$(CURDIR)/wheels \
+	    --extra-pip-arg=--no-build-isolation
