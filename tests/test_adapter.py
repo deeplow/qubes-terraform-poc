@@ -15,6 +15,7 @@ from qubes_provider.utils.qubes_adapter import (
     QubesVmAdapter,
     TerraformAnsibleAdapter,
 )
+from tests.fakes import FakeVM
 
 
 def adapter():
@@ -221,6 +222,63 @@ def test_bootstrap_imports_qube_module_and_facts():
     # The qube modules must import with qubesadmin intact (not None) — on 4.2 this
     # only holds because the compat shim provides qubesadmin.device_protocol.
     assert qm.qubesadmin is not None
+
+
+# --- _shutdown_derived (runs against the FakeApp) ----------------------------
+# qubesd refuses to change a dvm-template's template while disposables based on it
+# run; the adapter halts those derived qubes first (see qubes_adapter).
+
+def _dvm_template_scenario(app):
+    """Add a dvm-template on the OLD template + a running disposable based on it +
+    an unrelated running qube. Returns (disposable, unrelated)."""
+    app.domains.add(FakeVM("sd-proxy-dvm", "AppVM", "blue",
+                           template="sd-small-bookworm-template"))
+    disp = FakeVM("sd-proxy", "DispVM", "blue", template="sd-proxy-dvm")
+    disp.start()
+    app.domains.add(disp)
+    other = FakeVM("work", "AppVM", "red", template="fedora-40")
+    other.start()
+    app.domains.add(other)
+    return disp, other
+
+
+def test_shutdown_derived_halts_running_disposable(qube_env):
+    disp, other = _dvm_template_scenario(qube_env)
+    QubesVmAdapter()._shutdown_derived({
+        "name": "sd-proxy-dvm",
+        "template": "sd-small-trixie-template",      # actual change
+        "shutdown_if_required": True,
+        "force_shutdown": True,
+    })
+    assert disp.is_halted()              # the disposable based on it was halted
+    assert not other.is_halted()         # unrelated qube left running
+
+
+def test_shutdown_derived_noop_without_flag(qube_env):
+    disp, _ = _dvm_template_scenario(qube_env)
+    QubesVmAdapter()._shutdown_derived({
+        "name": "sd-proxy-dvm", "template": "sd-small-trixie-template",
+        "shutdown_if_required": False,
+    })
+    assert not disp.is_halted()          # opt-in: not touched
+
+
+def test_shutdown_derived_noop_when_template_unchanged(qube_env):
+    disp, _ = _dvm_template_scenario(qube_env)
+    QubesVmAdapter()._shutdown_derived({
+        "name": "sd-proxy-dvm",
+        "template": "sd-small-bookworm-template",    # same as current -> no change
+        "shutdown_if_required": True,
+    })
+    assert not disp.is_halted()
+
+
+def test_shutdown_derived_noop_on_create(qube_env):
+    # No such qube yet (create path): nothing to do, no error.
+    QubesVmAdapter()._shutdown_derived({
+        "name": "does-not-exist", "template": "sd-small-trixie-template",
+        "shutdown_if_required": True,
+    })
 
 
 def test_compat_shim_fills_4_2_gaps():

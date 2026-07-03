@@ -32,6 +32,7 @@ from .errors import QubesProviderError
 
 try:
     import qubesadmin  # noqa: PLC0415
+    import qubesadmin.exc  # noqa: PLC0415
     import qubesadmin.tools.qvm_template as qvm_template  # noqa: PLC0415
 except ImportError as exc:  # pragma: no cover
     raise QubesProviderError(
@@ -227,9 +228,44 @@ class QubesVmAdapter(TerraformAnsibleAdapter):
         self._validate_origin(desired)
         if self.as_dict(desired.get("origin")).get("type") == "repo":
             self._ensure_installed(desired)
+        self._shutdown_derived(desired)
         self._run_module(self.desired_to_qube_params(desired))
         if prior is not None:
             self._prune_undeclared(desired, prior)
+
+    def _shutdown_derived(self, desired: dict) -> None:
+        """
+        Shut downs derived qubes in order for a template to be changed.
+
+
+        If the template is actually changing and ``shutdown_if_required`` is set,
+        halt the dependent qubes(forced per ``force_shutdown``). No-op for creates, non-template-changes, and non-dvm-templates.
+        Mirrors :meth:`_ensure_installed` (provider-side ``qubesadmin`` work around the
+        module call) so the vendored ``QubeModule`` stays untouched.
+
+        NOTE: deprecated with deferred template changes
+        https://github.com/qubesos/qubes-issues/issues/8070
+        """
+        if not desired.get("shutdown_if_required"):
+            return
+        new_tpl = desired.get("template")
+        if not self.is_concrete(new_tpl) or new_tpl == self.DEFAULT_TOKEN:
+            return
+        app = qubesadmin.Qubes()
+        qube = app.domains.get(desired["name"])
+        if qube is None:
+            return  # create, not update
+        current = getattr(qube, "template", None)
+        if current is None or current.name == new_tpl:
+            return  # qube has no template, or the template is not changing
+        force = bool(desired.get("force_shutdown"))
+        # NOTE: this ignores a derived qube's own force_shutdown parameter
+        for descendant in qube.derived_vms:
+            if not descendant.is_halted():
+                try:
+                    descendant.shutdown(force=force, wait=True)
+                except qubesadmin.exc.QubesVMNotStartedError:
+                    pass
 
     def delete(self, name: str) -> None:
         self._run_module({"name": name, "state": "absent"})

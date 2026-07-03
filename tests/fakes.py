@@ -263,7 +263,7 @@ class FakeVM:
         object.__setattr__(self, "_running", False)
         object.__setattr__(self, "_paused", False)
 
-    def shutdown(self, force=False):
+    def shutdown(self, force=False, wait=False):
         object.__setattr__(self, "_running", False)
         object.__setattr__(self, "_paused", False)
 
@@ -271,6 +271,16 @@ class FakeVM:
         if self._paused:
             return "Paused"
         return "Running" if self._running else "Halted"
+
+    @property
+    def derived_vms(self):
+        # Mirrors qubesadmin's QubesVM.derived_vms: the qubes based on this one.
+        out = []
+        for vm in getattr(self, "_domains", []):
+            based_on = getattr(vm, "template", None)   # None for Template/Standalone
+            if based_on is not None and based_on.name == self.name:
+                out.append(vm)
+        return out
 
     def __str__(self):
         return self.name
@@ -299,6 +309,7 @@ class FakeDomains:
         pass
 
     def add(self, vm):
+        vm._domains = self          # backref so a VM can enumerate its siblings
         self._d[vm.name] = vm
 
 
