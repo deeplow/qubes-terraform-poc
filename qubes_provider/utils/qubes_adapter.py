@@ -223,10 +223,11 @@ class QubesVmAdapter(TerraformAnsibleAdapter):
         ``prior`` is given (update), prune the tags/features/services dropped since
         ``prior`` (qubes-ansible only adds/sets — Terraform converges removals).
 
-        ``origin.type == "repo"`` installs the TemplateVM from a repo via qvm-template
-        first (idempotent); ``QubeModule`` then configures the now-existing qube."""
+        ``origin.type`` of ``"repo"`` or ``"rpm"`` installs the TemplateVM via
+        qvm-template first (idempotent); ``QubeModule`` then configures the
+        now-existing qube."""
         self._validate_origin(desired)
-        if self.as_dict(desired.get("origin")).get("type") == "repo":
+        if self.as_dict(desired.get("origin")).get("type") in ("repo", "rpm"):
             self._ensure_installed(desired)
         self._shutdown_derived(desired)
         self._run_module(self.desired_to_qube_params(desired))
@@ -286,28 +287,36 @@ class QubesVmAdapter(TerraformAnsibleAdapter):
         if not origin:
             return
         otype = origin.get("type")
-        if otype not in ("clone", "repo"):
+        if otype not in ("clone", "repo", "rpm"):
             raise QubesProviderError(
-                f"origin.type must be 'clone' or 'repo', got {otype!r}"
+                f"origin.type must be 'clone', 'repo' or 'rpm', got {otype!r}"
             )
         if not origin.get("name"):
             raise QubesProviderError("origin.name is required")
+        if otype == "rpm" and not origin.get("path"):
+            raise QubesProviderError("origin.path is required with type='rpm'")
+        if otype != "rpm" and origin.get("path"):
+            raise QubesProviderError(
+                f"origin.path is only valid with type='rpm', not type={otype!r}"
+            )
         repo_keys = sorted(k for k in origin if k.startswith("repo_"))
-        if otype == "clone" and repo_keys:
+        if otype != "repo" and repo_keys:
             raise QubesProviderError(
                 f"origin repo_* keys are only valid with type='repo': {repo_keys}"
             )
-        if otype == "repo" and desired.get("name") != origin.get("name"):
+        if otype in ("repo", "rpm") and desired.get("name") != origin.get("name"):
             raise QubesProviderError(
-                "for origin type='repo' the qube name must equal origin.name "
+                f"for origin type={otype!r} the qube name must equal origin.name "
                 f"({desired.get('name')!r} != {origin.get('name')!r}): qvm-template "
-                "names the installed TemplateVM after the template"
+                "names the installed TemplateVM after the template package"
             )
 
     def _ensure_installed(self, desired: dict) -> None:
-        """Idempotently install a TemplateVM from a repo via qvm-template (mirrors salt
+        """Idempotently install a TemplateVM via qvm-template (mirrors salt
         ``qvm.template_installed``): a no-op when a domain of that name already exists,
-        else ``qvm-template --quiet --updatevm '' [--repoid=..] install [--pool=..] <name>``."""
+        else ``qvm-template --quiet --updatevm '' [--repoid=..] install [--pool=..] <name>``
+        for ``type='repo'``, or ``qvm-template install --nogpgcheck <path>`` for
+        ``type='rpm'``."""
         origin = self.as_dict(desired.get("origin"))
         name = origin["name"]
         app = qubesadmin.Qubes()
@@ -321,13 +330,23 @@ class QubesVmAdapter(TerraformAnsibleAdapter):
         # subcommand; only --pool is an `install`-subcommand option. Getting this order
         # wrong makes argparse exit(2) -> SystemExit, which is a BaseException and would
         # escape the resource's `except Exception`, hanging the apply.
-        argv = ["--quiet", "--updatevm", ""]
-        if origin.get("repo_id"):
-            argv += ["--repoid", origin["repo_id"]]
-        argv.append("install")
-        if origin.get("repo_pool"):
-            argv += ["--pool", origin["repo_pool"]]
-        argv.append(name)
+        if origin.get("type") == "rpm":
+            # A local RPM needs no repo at all: get_dl_list() skips *.rpm specs, so
+            # nothing is queried or downloaded and no UpdateVM is involved.
+            #
+            # --nogpgcheck is an `install`-SUBCOMMAND option (it must follow `install`,
+            # see the ordering note above) and is honoured only for local files --
+            # qvm-template ignores it for downloaded templates. An unsigned,
+            # locally-built template RPM therefore installs only by this path.
+            argv = ["install", "--nogpgcheck", origin["path"]]
+        else:
+            argv = ["--quiet", "--updatevm", ""]
+            if origin.get("repo_id"):
+                argv += ["--repoid", origin["repo_id"]]
+            argv.append("install")
+            if origin.get("repo_pool"):
+                argv += ["--pool", origin["repo_pool"]]
+            argv.append(name)
         try:
             rc = qvm_template.main(argv, app=app)
         except SystemExit as exc:  # argparse rejected argv; don't let it escape as BaseException

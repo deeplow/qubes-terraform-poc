@@ -111,6 +111,69 @@ def test_create_via_origin_repo_pool_argv_parses(qube_env, monkeypatch):
                       "vm-pool", "debian-12-minimal"]]
 
 
+# --- origin: rpm (qvm-template install <local file>) -------------------------
+
+def test_create_via_origin_rpm_installs_local_file(qube_env, monkeypatch):
+    # --nogpgcheck is an `install`-SUBCOMMAND option: putting it before `install`
+    # makes argparse exit(2). Parse with the real parser so ordering is enforced.
+    import qubesadmin.tools.qvm_template as qt
+    from qubes_provider.utils import qubes_adapter as adapter
+    from tests.fakes import FakeVM
+
+    calls = []
+
+    def fake_main(argv, app=None):
+        p, rest = qt.parser.parse_known_args(argv)
+        p = qt.parser.parse_args(rest, p)
+        assert p.command == "install"
+        assert p.templates == ["/tmp/qubes-template-sd-nix-1-2.noarch.rpm"]
+        assert p.nogpgcheck is True
+        calls.append(argv)
+        app.domains.add(FakeVM("sd-nix", "TemplateVM", "black"))
+        return 0
+
+    monkeypatch.setattr(adapter.qvm_template, "main", fake_main)
+    c = ctx()
+    state = res().create(c, make("sd-nix", klass="TemplateVM", label="black",
+                                 origin={"type": "rpm", "name": "sd-nix",
+                                         "path": "/tmp/qubes-template-sd-nix-1-2.noarch.rpm"}))
+    c.diagnostics.add_error.assert_not_called()
+    # No --updatevm/--quiet: a local RPM is never downloaded, so no repo is queried.
+    assert calls == [["install", "--nogpgcheck",
+                      "/tmp/qubes-template-sd-nix-1-2.noarch.rpm"]]
+    assert "sd-nix" in qube_env.domains
+    assert state["origin"]["type"] == "rpm"
+
+
+def test_origin_rpm_requires_path(qube_env, monkeypatch):
+    from qubes_provider.utils import qubes_adapter as adapter
+
+    called = []
+    monkeypatch.setattr(adapter.qvm_template, "main",
+                        lambda argv, app=None: called.append(argv) or 0)
+    c = ctx()
+    assert res().create(c, make("sd-nix", klass="TemplateVM", label="black",
+                                origin={"type": "rpm", "name": "sd-nix"})) is None
+    c.diagnostics.add_error.assert_called_once()
+    assert called == []
+
+
+def test_origin_rpm_name_must_match_qube_name(qube_env, monkeypatch):
+    # qvm-template names the TemplateVM after the RPM's package name, so a qube
+    # name that disagrees would silently create something else.
+    from qubes_provider.utils import qubes_adapter as adapter
+
+    called = []
+    monkeypatch.setattr(adapter.qvm_template, "main",
+                        lambda argv, app=None: called.append(argv) or 0)
+    c = ctx()
+    assert res().create(c, make("some-other-name", klass="TemplateVM", label="black",
+                                origin={"type": "rpm", "name": "sd-nix",
+                                        "path": "/tmp/x.rpm"})) is None
+    c.diagnostics.add_error.assert_called_once()
+    assert called == []
+
+
 def test_create_via_origin_repo_argparse_error_fails_resource(qube_env, monkeypatch):
     # A SystemExit from qvm-template's argparse must surface as a resource error,
     # not escape as BaseException (which would hang the apply).

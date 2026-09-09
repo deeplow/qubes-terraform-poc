@@ -81,7 +81,7 @@ doesn't hardcode (or need to track) individual properties.
 | `klass` | string, required | `AppVM`, `TemplateVM`, `StandaloneVM`, `DispVM`. Replaces on change. |
 | `label` | string, required | Label color (red, blue, …). |
 | `template` | string, optional/computed | Base template. `"*default*"` = Qubes default; a name = that template. |
-| `origin` | map(string), optional | How the qube is **created** (creation-time only). `type = "clone"` → clone the qube named by `name` (its volumes + prefs); `type = "repo"` → install the TemplateVM named by `name` from a repo via `qvm-template` (idempotent: skipped if already present), with optional `repo_id` (`--repoid`) and `repo_pool` (`--pool`). For `type = "repo"` the resource's `name` must equal `origin.name`. Consumed only at first create and **not reconstructable from a live qube**: an imported qube reads it back as null and the first apply sets it in place (no re-clone). It does **not** force replacement — to rebuild a qube when its source changes, use `lifecycle.replace_triggered_by` on the source (see below). |
+| `origin` | map(string), optional | How the qube is **created** (creation-time only). `type = "clone"` → clone the qube named by `name` (its volumes + prefs); `type = "repo"` → install the TemplateVM named by `name` from a repo via `qvm-template` (idempotent: skipped if already present), with optional `repo_id` (`--repoid`) and `repo_pool` (`--pool`); `type = "rpm"` → install a local template RPM given by `path` (`qvm-template install --nogpgcheck <path>`), which queries no repo and needs no network. For `type = "repo"` and `type = "rpm"` the resource's `name` must equal `origin.name`, because `qvm-template` names the TemplateVM after the template package. Consumed only at first create and **not reconstructable from a live qube**: an imported qube reads it back as null and the first apply sets it in place (no re-clone). It does **not** force replacement — to rebuild a qube when its source changes, use `lifecycle.replace_triggered_by` on the source (see below). |
 | `properties` | map(string), optional/computed | **Any** qube property: `memory`, `maxmem`, `netvm`, `kernel`, `virt_mode`, `autostart`, `template_for_dispvms`, `guivm`, … Values are strings (Qubes-canonical, e.g. `"True"`); `"*default*"` = that property's current Qubes default; `""` clears a VM-valued property. |
 | `features` | map(string), optional | Qube features (`vm.features`). Config-authoritative: deleting/clearing the block removes the declared keys (system-set features untouched). |
 | `services` | set(string), optional | Qubes services to enable — sugar for the `service.<x>` feature. Config-authoritative: deleting/clearing the block disables the declared services. |
@@ -93,7 +93,7 @@ doesn't hardcode (or need to track) individual properties.
 | `force_shutdown` | bool, optional | Force the shutdown done for a template change. |
 
 `origin` (clone), `services`, `volumes`, `devices` and `notes` are backed by
-qubes-ansible's `QubeModule`; an `origin` of `type = "repo"` is installed via `qvm-template` before
+qubes-ansible's `QubeModule`; an `origin` of `type = "repo"` or `type = "rpm"` is installed via `qvm-template` before
 the qube is configured. Tags, features and services are **converged**: declaring one adds
 it, and removing it from the config removes it from the qube (Qubes auto-tags are never touched).
 
@@ -112,6 +112,19 @@ resource "qubes_vm" "child" {
   }
 }
 ```
+
+> **`origin = { type = "rpm" }`.** Installs an already-built local template RPM, so unlike
+> `type = "repo"` it needs no network, no UpdateVM and no repo definition (`qvm-template`
+> skips `*.rpm` specs when building its download list). `--nogpgcheck` is passed because it
+> is honoured only for local files; signature checking on downloads is unaffected.
+>
+> ```hcl
+> origin = {
+>   type = "rpm"
+>   name = "my-template"                      # must equal the resource name
+>   path = "${path.root}/build/my-template.rpm"
+> }
+> ```
 
 > **`origin = { type = "repo" }` prerequisites.** It runs `qvm-template install --updatevm=''`, so the
 > **management qube itself downloads the template** (it must have network access) instead of proxying
