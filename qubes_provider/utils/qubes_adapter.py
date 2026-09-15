@@ -34,6 +34,8 @@ try:
     import qubesadmin  # noqa: PLC0415
     import qubesadmin.exc  # noqa: PLC0415
     import qubesadmin.tools.qvm_template as qvm_template  # noqa: PLC0415
+    from qubesadmin.exc import PermissionDenied, ProtocolError, QubesException
+    from qubesadmin.utils import vm_dependencies
 except ImportError as exc:  # pragma: no cover
     raise QubesProviderError(
         "qubesadmin is not available. Run this provider in dom0 or a Qubes "
@@ -277,6 +279,69 @@ class QubesVmAdapter(TerraformAnsibleAdapter):
             self.delete(name)
         except Exception:  # noqa: BLE001
             pass
+
+    def rename(self, old: str, desired: dict) -> None:
+        """Rename qube ``old`` to ``desired["name"]``, keeping its data.
+
+        qubesd cannot rename a qube (its ``name`` is write-once), so this does
+        what qubes-manager's "Rename" does:
+
+        1. clone ``old`` to the new name (volumes, properties, features, tags),
+        2. point every qube and global setting that uses ``old`` (template,
+           netvm, default_dispvm, ...) at the clone,
+        3. remove ``old``.
+
+        The qube must be halted to be cloned. If it is running, it is shut down
+        when ``desired["shutdown_if_required"]`` is set (forced per
+        ``force_shutdown``); otherwise this raises. If step 2 fails, the settings
+        already changed are pointed back at ``old`` and the clone is removed, so
+        ``old`` is left as it was."""
+        # Adapted from qubes-manager (rename_vm and RenameVMThread in
+        # qubesmanager/settings.py, https://github.com/QubesOS/qubes-manager,
+        # as of commit 95ed36d), GPL-2.0-or-later.
+        app = qubesadmin.Qubes()
+        vm = app.domains[old]
+        new_vm_name = desired["name"]
+
+        dependencies = vm_dependencies(app, vm)
+
+        # Qubes based on this one must be halted to change their template.
+        # NOTE: deferred template changes will remove this need
+        # https://github.com/qubesos/qubes-issues/issues/8070
+        running_dependencies = [
+            dep.name
+            for (dep, prop) in dependencies
+            if dep and prop == "template" and dep.is_running()
+        ]
+
+        if running_dependencies:
+            raise QubesProviderError(
+                f"cannot rename {old!r}: the following qubes using it as a "
+                f"template are running: {', '.join(running_dependencies)}. "
+                "Shut them down first."
+            )
+
+        if not vm.is_halted():
+            if not desired.get("shutdown_if_required"):
+                raise QubesProviderError(
+                    f"cannot rename running qube {old!r}; shut it down first "
+                    "or set shutdown_if_required = true"
+                )
+            vm.shutdown(force=bool(desired.get("force_shutdown")), wait=True)
+
+        new_vm = app.clone_vm(vm, new_vm_name)
+
+        moved = []
+        try:
+            for holder, prop in dependencies:
+                setattr(holder or app, prop, new_vm)
+                moved.append((holder, prop))
+        except (QubesException, PermissionDenied, ProtocolError):
+            for holder, prop in moved:
+                setattr(holder or app, prop, vm)
+            del app.domains[new_vm_name]
+            raise
+        del app.domains[old]
 
     # --- origin (creation mode) ---------------------------------------------
 

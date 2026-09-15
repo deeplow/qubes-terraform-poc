@@ -77,7 +77,7 @@ doesn't hardcode (or need to track) individual properties.
 
 | Attribute | Type | Notes |
 |---|---|---|
-| `name` | string, required | Unique VM name. Changing it replaces the resource. |
+| `name` | string, required | Unique VM name. Changing it renames the qube like qubes-manager does (clone + point the qubes/settings using it at the clone + remove the old one), keeping its data. A running qube needs `shutdown_if_required`. |
 | `klass` | string, required | `AppVM`, `TemplateVM`, `StandaloneVM`, `DispVM`. Replaces on change. |
 | `label` | string, required | Label color (red, blue, …). |
 | `template` | string, optional/computed | Base template. `"*default*"` = Qubes default; a name = that template. |
@@ -89,8 +89,8 @@ doesn't hardcode (or need to track) individual properties.
 | `volumes` | map(map(string)), optional/computed | Per-volume config, e.g. `{ private = { size = "5368709120" } }`. Size is in **bytes** (matching qubes-ansible); volumes are **grow-only**. Also `revisions_to_keep`. |
 | `devices` | json, optional | Device assignments in qubes-ansible's raw form: a list of `"class:backend:port:devid"` specs, or `{ strategy = "strict"\|"append", items = [...] }`. |
 | `notes` | string, optional/computed | Free-form qube notes. |
-| `shutdown_if_required` | bool, optional | If changing `template` needs the qube halted and it's running, shut it down first. Default false → error instead. |
-| `force_shutdown` | bool, optional | Force the shutdown done for a template change. |
+| `shutdown_if_required` | bool, optional | If changing `template` or `name` needs the qube halted and it's running, shut it down first. Default false → error instead. |
+| `force_shutdown` | bool, optional | Force the shutdown done for a template change or a rename. |
 
 `origin` (clone), `services`, `volumes`, `devices` and `notes` are backed by
 qubes-ansible's `QubeModule`; an `origin` of `type = "repo"` or `type = "rpm"` is installed via `qvm-template` before
@@ -235,7 +235,9 @@ admin.vm.CurrentState	*	work		@tag:created-by-work	target=dom0
 The capabilities added on top need their own verbs as you use them: `admin.vm.volume.Resize`
 (volumes), `admin.vm.device.*.Attach`/`Detach`/`List` (devices), `admin.vm.Clone`
 (`origin = { type = "clone" }`), and the `qubes.Template*` qrexec services
-(`origin = { type = "repo" }`).
+(`origin = { type = "repo" }`). Renaming a qube (changing `name`) needs what a clone needs,
+plus `admin.vm.Remove` and `admin.vm.property.Set` / `admin.property.Set` on the qubes and
+global settings that use it.
 
 Scope as tightly as your use case allows. Otherwise, the following `include/admin-global-ro` may help:
 

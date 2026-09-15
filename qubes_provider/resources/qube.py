@@ -27,6 +27,7 @@ class QubesVMResource(Resource):
     """Maps a Terraform resource onto a Qubes domain, via the QubesVmAdapter.
 
       create/update -> qubes.create_or_update
+      update (name) -> qubes.rename, then qubes.create_or_update
       read          -> qubes.read_vm
       delete        -> qubes.delete
     """
@@ -45,11 +46,15 @@ class QubesVMResource(Resource):
         return schema.Schema(
             version=1,
             attributes=[
-                # Identity. A Qubes VM name is unique and immutable as an
-                # identity, so changing it replaces the resource.
+                # Identity. qubesd's name is write-once, so changing it renames
+                # the qube the way qubes-manager does (see QubesVmAdapter.rename).
                 schema.Attribute(
-                    "name", types.String(), required=True, requires_replace=True,
-                    description="Unique Qubes VM name.",
+                    "name", types.String(), required=True,
+                    description=(
+                        "Unique Qubes VM name. Changing it renames the qube: it is "
+                        "cloned to the new name, the qubes and settings using it are "
+                        "pointed at the clone, and the old qube is removed."
+                    ),
                 ),
                 # VM class cannot be changed in place.
                 schema.Attribute(
@@ -100,13 +105,13 @@ class QubesVMResource(Resource):
                 schema.Attribute(
                     "shutdown_if_required", types.Bool(), optional=True,
                     description=(
-                        "If a template change needs the qube halted and it is running, "
-                        "shut it down first (default false -> error instead)."
+                        "If a template change or a rename needs the qube halted and it "
+                        "is running, shut it down first (default false -> error instead)."
                     ),
                 ),
                 schema.Attribute(
                     "force_shutdown", types.Bool(), optional=True,
-                    description="Force the shutdown done for a template change.",
+                    description="Force the shutdown done for a template change or a rename.",
                 ),
                 # --- capabilities delegated to qubes-ansible ----------------
                 schema.Attribute(
@@ -185,6 +190,8 @@ class QubesVMResource(Resource):
 
     def update(self, ctx: UpdateContext, current: dict, planned: dict) -> Optional[dict]:
         try:
+            if current["name"] != planned["name"]:
+                self.qubes.rename(current["name"], planned)
             self.qubes.create_or_update(planned, prior=current)
             return self.qubes.read_vm(planned["name"], planned)
         except Exception as exc:  # noqa: BLE001

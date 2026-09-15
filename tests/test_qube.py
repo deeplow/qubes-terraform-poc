@@ -9,6 +9,9 @@ declarative tag/feature removal, template-shutdown, create rollback, import.
 
 from unittest.mock import MagicMock
 
+import qubesadmin.exc
+
+from tests.fakes import FakeVM
 from qubes_provider.utils.errors import QubesProviderError
 from qubes_provider.provider import QubesProvider
 from qubes_provider.utils.qubes_adapter import QubesVmAdapter
@@ -220,6 +223,88 @@ def test_template_change_halted_succeeds(qube_env):
     state = res().update(ctx(), make(template="fedora-40"),
                          make(template="default-template"))
     assert state["template"] == "default-template"
+
+
+# --- rename (clone + repoint dependents + remove) ---------------------------
+
+def test_name_change_does_not_replace():
+    attrs = {a.name: a for a in QubesVMResource.get_schema().attributes}
+    assert not attrs["name"].requires_replace
+
+
+def test_rename_keeps_qube(qube_env):
+    res().create(ctx(), make(properties={"memory": "1024"}, tags={"team-x"}))
+    qube_env.domains["tf-work"].features["gui"] = "1"   # undeclared: kept by the clone
+    c = ctx()
+    state = res().update(c, make(properties={"memory": "1024"}, tags={"team-x"}),
+                         make(name="tf-new", properties={"memory": "1024"}, tags={"team-x"}))
+    c.diagnostics.add_error.assert_not_called()
+    assert "tf-work" not in qube_env.domains
+    vm = qube_env.domains["tf-new"]
+    assert vm.features["gui"] == "1"
+    assert "team-x" in vm.tags
+    assert state["name"] == "tf-new"
+    assert state["properties"]["memory"] == "1024"
+
+
+def test_rename_repoints_dependents(qube_env):
+    res().create(ctx(), make(name="tf-app", template="fedora-40"))
+    tpl = make(name="fedora-40", klass="TemplateVM", label="black")
+    c = ctx()
+    res().update(c, tpl, {**tpl, "name": "tf-tpl"})
+    c.diagnostics.add_error.assert_not_called()
+    assert "fedora-40" not in qube_env.domains
+    assert qube_env.domains["tf-app"].template.name == "tf-tpl"
+    assert qube_env.default_template.name == "tf-tpl"   # global setting too
+
+
+def test_rename_refused_while_template_dependent_runs(qube_env):
+    res().create(ctx(), make(name="tf-app", template="fedora-40"))
+    qube_env.domains["tf-app"].start()
+    tpl = make(name="fedora-40", klass="TemplateVM", label="black")
+    c = ctx()
+    assert res().update(c, tpl, {**tpl, "name": "tf-tpl"}) is None
+    assert "tf-app" in str(c.diagnostics.add_error.call_args)
+    assert "fedora-40" in qube_env.domains
+    assert "tf-tpl" not in qube_env.domains
+
+
+def test_rename_running_qube_without_flag_errors(qube_env):
+    res().create(ctx(), make())
+    qube_env.domains["tf-work"].start()
+    c = ctx()
+    assert res().update(c, make(), make(name="tf-new")) is None
+    c.diagnostics.add_error.assert_called_once()
+    assert qube_env.domains["tf-work"].is_running()
+    assert "tf-new" not in qube_env.domains
+
+
+def test_rename_running_qube_with_flag_shuts_down(qube_env):
+    res().create(ctx(), make())
+    old = qube_env.domains["tf-work"]
+    old.start()
+    state = res().update(ctx(), make(), make(name="tf-new", shutdown_if_required=True))
+    assert old.is_halted()
+    assert state["name"] == "tf-new"
+    assert "tf-work" not in qube_env.domains
+
+
+def test_rename_rolls_back_when_repoint_fails(qube_env, monkeypatch):
+    res().create(ctx(), make(name="tf-app", template="fedora-40"))
+    set_attr = FakeVM.__setattr__
+
+    def refuse_template(vm, key, value):
+        if key == "template":
+            raise qubesadmin.exc.QubesException("refused")
+        set_attr(vm, key, value)
+
+    monkeypatch.setattr(FakeVM, "__setattr__", refuse_template)
+    tpl = make(name="fedora-40", klass="TemplateVM", label="black")
+    c = ctx()
+    assert res().update(c, tpl, {**tpl, "name": "tf-tpl"}) is None
+    assert "tf-tpl" not in qube_env.domains                   # clone removed
+    assert qube_env.default_template.name == "fedora-40"      # global pointed back
+    assert qube_env.domains["tf-app"].template.name == "fedora-40"
 
 
 # --- delete / import --------------------------------------------------------

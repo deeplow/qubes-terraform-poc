@@ -56,6 +56,12 @@ class _Ref:
     def __str__(self):
         return self.name
 
+    def __eq__(self, other):  # like QubesVM: equal to a VM or name of that name
+        return self.name == getattr(other, "name", other)
+
+    def __hash__(self):
+        return hash(self.name)
+
 
 class FakeVolume:
     """A qube storage volume, exposing the fields ``qube_facts`` reads."""
@@ -427,6 +433,13 @@ class FakeApp:
         src = src_vm if isinstance(src_vm, FakeVM) else self.domains[src_vm]
         template = src._props.get("template")
         vm = FakeVM(new_name, new_cls or src.klass, str(src.label), template=template)
+        # Like qubesadmin's clone_vm: copy non-default properties, features, tags.
+        for prop in src.property_list():
+            if not src.property_is_default(prop):
+                vm._props[prop] = src._props[prop]
+                vm._defaults.discard(prop)
+        vm.features.update(src.features)
+        vm.tags.update(t for t in src.tags if not t.startswith("created-by-"))
         self.domains.add(vm)
         return vm
 
