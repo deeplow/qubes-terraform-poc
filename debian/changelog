@@ -1,3 +1,10 @@
+qubes-terraform (0.1.0-2) unstable; urgency=medium
+
+  * Bump vendored wheels: grpcio 1.84.0, cryptography 50.0.1, cffi 2.1.1,
+    msgpack 1.2.2, typing_extensions 4.16.0
+
+ -- deeplow <deeplower@protonmail.com>  Tue, 15 Sep 2026 00:00:00 +0000
+
 qubes-terraform (0.1.0-1) unstable; urgency=medium
 
   * Initial packaging
