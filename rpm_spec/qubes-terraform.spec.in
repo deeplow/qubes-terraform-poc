@@ -9,13 +9,13 @@ License:        GPL-3.0-or-later
 URL:            https://github.com/deeplow/qubes-terraform
 Source0:        %{name}-%{version}.tar.gz
 Source1:        tf-1.2.0-py3-none-any.whl
-Source2:        cryptography-49.0.0-cp311-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
-Source3:        grpcio-1.81.1-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+Source2:        cryptography-50.0.1-cp311-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+Source3:        grpcio-1.84.0-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
 Source4:        protobuf-5.29.6-py3-none-any.whl
-Source5:        msgpack-1.2.1-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
-Source6:        cffi-2.0.0-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
+Source5:        msgpack-1.2.2-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+Source6:        cffi-2.1.1-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
 Source7:        pycparser-3.0-py3-none-any.whl
-Source8:        typing_extensions-4.15.0-py3-none-any.whl
+Source8:        typing_extensions-4.16.0-py3-none-any.whl
 
 # Bundles native wheels (grpcio/cryptography/cffi) -> arch-specific, not noarch.
 ExclusiveArch:  x86_64
