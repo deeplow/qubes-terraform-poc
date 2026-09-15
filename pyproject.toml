@@ -4,7 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "terraform-provider-qubes"
-version = "0.1.0"
+# Version is sourced from the root `version` file (single source of truth shared
+# with the RPM `@VERSION@` substitution); see [tool.setuptools.dynamic] below.
+dynamic = ["version"]
 description = "Terraform/OpenTofu provider for Qubes OS, bound to the Python Admin API (qubesadmin)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,6 +26,9 @@ dev = ["pytest>=7"]
 [project.scripts]
 # Terraform/OpenTofu expects an executable named terraform-provider-<name>.
 terraform-provider-qubes = "qubes_provider.main:main"
+
+[tool.setuptools.dynamic]
+version = { file = ["version"] }
 
 [tool.setuptools.packages.find]
 include = ["qubes_provider*"]
